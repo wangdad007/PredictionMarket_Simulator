@@ -4,14 +4,44 @@
 
 默认不会直接写数据库，也不会直接上链。它会先生成一份可检查的计划文件，你确认后再决定这批数据是只落库，还是发真实链上交易。
 
+## 最快用法
+
+只需要记住这条命令：
+
+```bash
+cd PredictionMarket_Simulator
+go run .
+```
+
+在 `runtime.mode: "preview"` 下，程序会在终端里问你要生成哪类数据：
+
+- 输入 `1`：创建新博弈池，并生成这些新池的购买数据。
+- 输入 `2`：购买已有博弈池，随后输入已有的 `game_id`，例如 `1,2,3`。
+
+这一步只生成预览计划，不写数据库、不上链。确认计划没问题后，再把 `runtime.mode` 改成 `"execute"` 执行同一个 `plan_file`。
+
 ## 两步流程
 
 第一步：生成预览计划。
 
 ```bash
-cd simulator
+go run .
+```
+
+`go run .` 默认会读取 `config.yaml`，并在 `preview` 模式下从终端里询问要生成“创建新博弈池”还是“购买已有博弈池”的数据。
+
+如果你想保留旧的非交互命令，仍然可以使用：
+
+```bash
 go run ./cmd/simulator -config config.yaml
 ```
+
+旧命令不会弹出交互问题，会直接使用 `config.yaml` 里的 `scenario.type`。使用 `go run .` 时，程序会让你选择：
+
+- `1` / `create_and_trade`：生成创建新博弈池的数据，并围绕这些新池生成购买记录。
+- `2` / `trade_existing`：输入已有 `game_id`，只生成购买已有博弈池的数据。
+
+交互输入只覆盖本次 `preview` 运行的配置，不会改写 `config.yaml`。`execute` 模式始终读取已经生成好的 `plan_file`，不会重新随机生成数据。
 
 默认配置是：
 
@@ -120,7 +150,7 @@ scenario:
 
 `runtime.enabled`
 
-是否允许运行。设为 `false` 且处于 `execute` 模式时会直接停止，防止误执行。
+是否允许运行模拟器。它是安全开关，不是前端展示开关。设为 `false` 且处于 `execute` 模式时会直接停止，防止误执行；`preview` 模式仍可生成计划文件。
 
 `runtime.mode`
 
@@ -201,6 +231,14 @@ scenario:
 `timing.timeout_seconds`
 
 整次模拟运行的超时时间。
+
+## 前端是否会显示
+
+`runtime.enabled: true` 只代表允许模拟器执行，不代表生成的数据一定会在前端出现。
+
+- `runtime.mode: preview`：只生成 `plan_file`，不写数据库、不上链，前端不会显示新数据。
+- `runtime.mode: execute` + `runtime.on_chain: false`：会把计划写入 MySQL。如果前端后端连接的就是同一个数据库，并且页面读取这些表，通常可以显示；但链上合约并不知道这些 DB-only 数据。
+- `runtime.mode: execute` + `runtime.on_chain: true`：会发真实链上交易并同步数据库。前端是否显示取决于交易成功、同步成功，以及前端后端是否读取同一套链和数据库。
 
 ## YES/NO 编号约定
 

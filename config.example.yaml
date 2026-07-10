@@ -1,5 +1,6 @@
 # Copy this file to config.yaml and adjust values for your test environment.
 runtime:
+  # Allows execute mode to run. This is a simulator safety switch, not a frontend display switch.
   enabled: true
   # preview: generate a reviewable plan file only.
   # execute: read plan_file and apply the exact same data.
@@ -32,6 +33,7 @@ mysql:
 scenario:
   # create_and_trade: random users create new markets and then buy.
   # trade_existing: random users only buy configured existing_game_ids.
+  # In preview mode, you can also run with -interactive and choose this in the terminal.
   type: "create_and_trade"
   market_count: 3
   existing_game_ids: []

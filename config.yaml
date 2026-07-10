@@ -7,6 +7,7 @@
 runtime:
   # 是否允许运行模拟器。preview 模式下即使为 false 也仍可生成计划；
   # execute 模式下建议保持 true，避免误把已关闭的配置拿去执行。
+  # 它只是模拟器安全开关，不是前端展示开关。
   enabled: true
 
   # 运行模式：
@@ -73,6 +74,7 @@ scenario:
   # - create_and_trade：随机账户先创建新市场，再围绕新市场购买 YES/NO。
   # - trade_existing：只对 existing_game_ids 中的已有市场做购买计划。
   #   真正 execute 时要求 runtime.on_chain=true，因为已有市场状态应以链上为准。
+  # preview 模式下也可以运行时加 -interactive，在终端里手动选择这两种场景。
   type: "create_and_trade"
 
   # create_and_trade 场景下，本次随机创建的新市场数量。
