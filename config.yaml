@@ -1,34 +1,103 @@
-# Local simulator config. The default only generates a reviewable preview plan.
+# Prediction Market Simulator 本地配置。
+# 当前默认值只会生成一份可审查的预览计划，不会写数据库，也不会发送链上交易。
+# 常用流程：
+# 1. 保持 runtime.mode="preview" 生成 out/simulator-plan.json。
+# 2. 人工检查计划文件后，把 runtime.mode 改成 "execute" 再执行同一批数据。
+# 3. 如需真实上链，还要同时设置 runtime.on_chain=true 和 runtime.approve_on_chain=true。
 runtime:
+  # 是否允许运行模拟器。preview 模式下即使为 false 也仍可生成计划；
+  # execute 模式下建议保持 true，避免误把已关闭的配置拿去执行。
   enabled: true
+
+  # 运行模式：
+  # - preview：随机生成账户、市场和交易计划，只写 plan_file，不写库不上链。
+  # - execute：读取 plan_file 中已经预览过的数据并执行，不会重新随机生成。
   mode: "preview"
+
+  # execute 阶段是否发送真实链上交易。
+  # false：只把计划数据写入 MySQL，适合快速准备前后端展示数据。
+  # true：调用合约 createGame/buyShares，并把链上结果同步到 MySQL。
   on_chain: false
+
+  # preview 阶段写入、execute 阶段读取的计划文件路径。
+  # 注意：计划文件会包含本地模拟账户私钥，只应保存在本地测试环境。
   plan_file: "out/simulator-plan.json"
+
+  # 链上执行的额外安全确认开关。只有 mode=execute、on_chain=true、
+  # approve_on_chain=true 三者同时满足时，程序才允许发送链上交易。
   approve_on_chain: false
+
+  # 旧版预览开关；现在推荐使用 runtime.mode。
+  # execute 模式下不能为 true。
   dry_run: false
 
 chain:
+  # 仅在 mode=execute 且 on_chain=true 时必须填写真实私钥。
+  # 该钱包会先给随机生成的模拟账户打测试币，再由随机账户创建市场/购买份额。
+  # 请勿提交真实私钥；本地预览时可保留占位值。
   private_key: "replace-with-funded-private-key"
+
+  # 预测市场合约地址。无论是否上链都会校验为合法十六进制地址；
+  # DB-only execute 也会把它作为写入数据库的 contract_address。
   contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+
+  # 普通 EVM JSON-RPC 地址。use_broker_chain=false 且 on_chain=true 时使用。
+  # 本地链常见值为 http://127.0.0.1:8545。
   rpc_url: "http://127.0.0.1:8545"
+
+  # BrokerChain 网关地址。use_broker_chain=true 且 on_chain=true 时使用。
+  # 程序会通过该接口发交易和读链，仍使用 private_key 签名。
   broker_chain_url: "https://dash.broker-chain.com:440/"
+
+  # 是否通过 BrokerChain 接口访问链。
+  # false：使用 rpc_url；true：使用 broker_chain_url。
   use_broker_chain: false
 
 mysql:
+  # MySQL DSN。preview 模式可以为空；runtime.mode=execute 时必须填写。
+  # 示例：user:password@tcp(127.0.0.1:3306)/predictionmarket_local?parseTime=true
+  # DSN 必须包含数据库名，否则配置校验会失败。
   dsn: ""
+
+  # 数据库连接池最大打开连接数；<=0 时程序默认使用 10。
   max_open_connections: 10
+
+  # 数据库连接池最大空闲连接数；<=0 时程序默认使用 2。
   max_idle_connections: 2
+
+  # 单个数据库连接的最长复用时间，单位：秒；<=0 时程序默认使用 300。
   connection_max_lifetime_seconds: 300
 
 scenario:
+  # 场景类型：
+  # - create_and_trade：随机账户先创建新市场，再围绕新市场购买 YES/NO。
+  # - trade_existing：只对 existing_game_ids 中的已有市场做购买计划。
+  #   真正 execute 时要求 runtime.on_chain=true，因为已有市场状态应以链上为准。
   type: "create_and_trade"
+
+  # create_and_trade 场景下，本次随机创建的新市场数量。
+  # <=0 时程序默认使用 1。
   market_count: 3
+
+  # trade_existing 场景下要交易的已有 game_id 列表，例如 [1, 2, 3]。
+  # create_and_trade 场景会忽略该字段。
   existing_game_ids: []
+
+  # 本次模拟生成的随机账户数量。trade.creator_also_trades=false 时至少需要 2 个，
+  # 这样创建者和购买者可以分开。
   participants: 8
+
+  # 每个市场随机生成的最少购买笔数。
+  # 必须 <= trades_per_market_max；<=0 时程序默认使用 4。
   trades_per_market_min: 5
+
+  # 每个市场随机生成的最多购买笔数。
+  # 必须 >= trades_per_market_min；<=0 时程序默认使用 12。
   trades_per_market_max: 15
 
 market:
+  # 允许随机创建的市场类型。留空 [] 时程序会使用全部支持类型。
+  # 每个值都必须是程序支持的模板类型，否则配置校验会失败。
   types:
     - "TYPE_PRICE"
     - "TYPE_VOLATILITY"
@@ -38,16 +107,38 @@ market:
     - "TYPE_RELATIVE"
     - "TYPE_PRICE_THRESHOLD"
     - "TYPE_EVENT"
+
+  # 新建市场的初始流动性随机范围，单位：BKC。
+  # 使用字符串是为了避免小数精度问题；最小值必须 <= 最大值。
   initial_liquidity_min_bkc: "3"
+
+  # 新建市场的初始流动性上限，单位：BKC。
   initial_liquidity_max_bkc: "12"
+
+  # 新建市场持续时间的随机下限，单位：秒；3600 表示 1 小时。
+  # 必须 <= duration_max_seconds；<=0 时程序默认使用 3600。
   duration_min_seconds: 3600
+
+  # 新建市场持续时间的随机上限，单位：秒；86400 表示 1 天。
+  # 必须 >= duration_min_seconds；<=0 时程序默认使用 86400。
   duration_max_seconds: 86400
 
 trade:
+  # 单笔购买金额的随机下限，单位：BKC。
+  # 使用字符串是为了避免小数精度问题；最小值必须 <= 最大值。
   buy_min_bkc: "0.2"
+
+  # 单笔购买金额的随机上限，单位：BKC。
   buy_max_bkc: "2"
+
+  # 创建者是否也参与购买自己创建的市场。
+  # false 时，程序会尽量让非创建者账户参与交易，因此 participants 至少需要 2。
   creator_also_trades: false
 
 timing:
+  # 多笔操作之间的暂停时间，单位：秒；可使用小数。
+  # 这有助于在链上执行或网关限流场景下降低请求压力。
   pause_seconds: 0.2
+
+  # 单次模拟运行的总超时时间，单位：秒；<=0 时程序默认使用 120。
   timeout_seconds: 120
