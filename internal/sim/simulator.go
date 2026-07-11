@@ -14,6 +14,7 @@ import (
 	"predictionmarket-simulator/internal/chain"
 	"predictionmarket-simulator/internal/config"
 	dbwriter "predictionmarket-simulator/internal/db"
+	"predictionmarket-simulator/internal/ipfs"
 	"predictionmarket-simulator/internal/scenario"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -24,9 +25,14 @@ type Logger interface {
 }
 
 type Simulator struct {
-	cfg *config.Config
-	log Logger
-	rng *mrand.Rand
+	cfg              *config.Config
+	log              Logger
+	rng              *mrand.Rand
+	metadataUploader metadataUploader
+}
+
+type metadataUploader interface {
+	UploadMetadata(ctx context.Context, metadataJSON string) (string, error)
 }
 
 type participant struct {
@@ -44,9 +50,10 @@ type offchainMarketState struct {
 
 func New(cfg *config.Config, logger Logger) *Simulator {
 	return &Simulator{
-		cfg: cfg,
-		log: logger,
-		rng: mrand.New(mrand.NewSource(time.Now().UnixNano())),
+		cfg:              cfg,
+		log:              logger,
+		rng:              mrand.New(mrand.NewSource(time.Now().UnixNano())),
+		metadataUploader: ipfs.NewUploader(cfg.IPFS.UploadURL),
 	}
 }
 
@@ -233,6 +240,11 @@ func (s *Simulator) executeCreateAndTradePlan(ctx context.Context, writer *dbwri
 		var info *chain.GameInfo
 		var offchain *offchainMarketState
 
+		if s.cfg.Runtime.OnChain {
+			if err := s.uploadMarketMetadata(ctx, market); err != nil {
+				return fmt.Errorf("upload metadata for market #%d: %w", plannedMarket.Index, err)
+			}
+		}
 		s.logf("simulator: create market #%d type=%s creator=%s initial=%s BKC cid=%s",
 			plannedMarket.Index, market.Type, creator.address, market.InitialLiquidity, market.IPFSCID)
 		if s.cfg.Runtime.OnChain {
@@ -269,6 +281,21 @@ func (s *Simulator) executeCreateAndTradePlan(ctx context.Context, writer *dbwri
 			return err
 		}
 	}
+	return nil
+}
+
+func (s *Simulator) uploadMarketMetadata(ctx context.Context, market *scenario.Market) error {
+	if market == nil {
+		return errors.New("market is nil")
+	}
+	if s.metadataUploader == nil {
+		return errors.New("metadata uploader is not configured")
+	}
+	cid, err := s.metadataUploader.UploadMetadata(ctx, market.MetadataJSON)
+	if err != nil {
+		return err
+	}
+	market.IPFSCID = cid
 	return nil
 }
 

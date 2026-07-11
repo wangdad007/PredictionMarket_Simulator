@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -46,6 +47,9 @@ type rawConfig struct {
 		MaxIdleConnections           int    `yaml:"max_idle_connections"`
 		ConnectionMaxLifetimeSeconds int    `yaml:"connection_max_lifetime_seconds"`
 	} `yaml:"mysql"`
+	IPFS struct {
+		UploadURL string `yaml:"upload_url"`
+	} `yaml:"ipfs"`
 	Scenario struct {
 		Type               string `yaml:"type"`
 		MarketCount        int    `yaml:"market_count"`
@@ -76,6 +80,7 @@ type Config struct {
 	Runtime  RuntimeConfig
 	Chain    ChainConfig
 	MySQL    MySQLConfig
+	IPFS     IPFSConfig
 	Scenario ScenarioConfig
 	Market   MarketConfig
 	Trade    TradeConfig
@@ -104,6 +109,10 @@ type MySQLConfig struct {
 	MaxOpenConnections    int
 	MaxIdleConnections    int
 	ConnectionMaxLifetime time.Duration
+}
+
+type IPFSConfig struct {
+	UploadURL string
 }
 
 type ScenarioConfig struct {
@@ -211,6 +220,9 @@ func applyDefaults(raw *rawConfig) {
 	if raw.MySQL.ConnectionMaxLifetimeSeconds <= 0 {
 		raw.MySQL.ConnectionMaxLifetimeSeconds = 300
 	}
+	if strings.TrimSpace(raw.IPFS.UploadURL) == "" {
+		raw.IPFS.UploadURL = "http://127.0.0.1:8081/api/v1/ipfs/add"
+	}
 }
 
 func validate(raw *rawConfig) error {
@@ -280,6 +292,17 @@ func validate(raw *rawConfig) error {
 	if raw.Runtime.Mode == ModeExecute && strings.TrimSpace(raw.MySQL.DSN) == "" {
 		return errors.New("mysql.dsn is required when runtime.mode is execute")
 	}
+	if err := requireHTTPURL("ipfs.upload_url", raw.IPFS.UploadURL); err != nil {
+		return err
+	}
+	return nil
+}
+
+func requireHTTPURL(field string, value string) error {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(value))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("%s must be an HTTP(S) URL", field)
+	}
 	return nil
 }
 
@@ -323,6 +346,9 @@ func buildConfig(raw *rawConfig) *Config {
 			MaxOpenConnections:    raw.MySQL.MaxOpenConnections,
 			MaxIdleConnections:    raw.MySQL.MaxIdleConnections,
 			ConnectionMaxLifetime: time.Duration(raw.MySQL.ConnectionMaxLifetimeSeconds) * time.Second,
+		},
+		IPFS: IPFSConfig{
+			UploadURL: strings.TrimSpace(raw.IPFS.UploadURL),
 		},
 		Scenario: ScenarioConfig{
 			Type:               raw.Scenario.Type,

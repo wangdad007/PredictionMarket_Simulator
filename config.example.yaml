@@ -36,6 +36,11 @@ mysql:
   # 单连接最长复用时间（秒）。
   connection_max_lifetime_seconds: 300
 
+ipfs:
+  # 创建链上博弈池前上传 metadata；本地后端默认提供该地址。
+  # 真实 Kubo/IPFS 可改为 http://127.0.0.1:5001/api/v0/add?pin=true。
+  upload_url: "http://127.0.0.1:8081/api/v1/ipfs/add"
+
 scenario:
   # create_and_trade：创建新池并交易；trade_existing：交易已有池。
   # trade_existing 在 execute 时必须 on_chain=true；preview 可在终端临时选择。

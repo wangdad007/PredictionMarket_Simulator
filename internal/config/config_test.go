@@ -23,6 +23,8 @@ chain:
   use_broker_chain: false
 mysql:
   dsn: "root:secret@tcp(127.0.0.1:3306)/predictionmarket_local?parseTime=true"
+ipfs:
+  upload_url: "http://127.0.0.1:8081/api/v1/ipfs/add"
 scenario:
   type: "create_and_trade"
   market_count: 2
@@ -63,6 +65,9 @@ timing:
 	}
 	if len(cfg.Market.Types) != 2 || cfg.Market.Types[1] != "TYPE_EVENT" {
 		t.Fatalf("unexpected market types: %#v", cfg.Market.Types)
+	}
+	if cfg.IPFS.UploadURL != "http://127.0.0.1:8081/api/v1/ipfs/add" {
+		t.Fatalf("unexpected IPFS upload URL: %q", cfg.IPFS.UploadURL)
 	}
 }
 

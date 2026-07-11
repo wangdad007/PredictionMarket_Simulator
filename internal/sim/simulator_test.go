@@ -9,6 +9,7 @@ import (
 
 	"predictionmarket-simulator/internal/config"
 	dbwriter "predictionmarket-simulator/internal/db"
+	"predictionmarket-simulator/internal/scenario"
 )
 
 func TestExecuteOffchainTradeMatchesContractBuyYesFormula(t *testing.T) {
@@ -37,6 +38,35 @@ func TestExecuteOffchainTradeMatchesContractBuyYesFormula(t *testing.T) {
 	}
 	if got, want := trade.MySharesYesAfter, "45"; got != want {
 		t.Fatalf("YES shares after = %s, want %s", got, want)
+	}
+}
+
+type recordingMetadataUploader struct {
+	payload string
+	cid     string
+}
+
+func (u *recordingMetadataUploader) UploadMetadata(_ context.Context, payload string) (string, error) {
+	u.payload = payload
+	return u.cid, nil
+}
+
+func TestUploadMarketMetadataReplacesPlaceholderCID(t *testing.T) {
+	uploader := &recordingMetadataUploader{cid: "local-v1-uploaded"}
+	simulator := &Simulator{metadataUploader: uploader}
+	market := &scenario.Market{
+		IPFSCID:      "sim-placeholder",
+		MetadataJSON: `{"desc":"黄金 上涨"}`,
+	}
+
+	if err := simulator.uploadMarketMetadata(context.Background(), market); err != nil {
+		t.Fatal(err)
+	}
+	if uploader.payload != market.MetadataJSON {
+		t.Fatalf("payload = %q, want %q", uploader.payload, market.MetadataJSON)
+	}
+	if market.IPFSCID != "local-v1-uploaded" {
+		t.Fatalf("market cid = %q, want uploaded cid", market.IPFSCID)
 	}
 }
 

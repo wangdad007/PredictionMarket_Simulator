@@ -64,7 +64,7 @@ var templates = map[string]Template{
 		OptionNo:  "NO",
 		Params:    []string{"上涨", "下跌", "持平"},
 		BuildDesc: func(param string, start time.Time, end time.Time, _ int) string {
-			return fmt.Sprintf("%s 至 %s 黄金价格 %s", formatTime(start), formatTime(end), param)
+			return fmt.Sprintf("黄金价格 %s %s", param, durationDays(start, end))
 		},
 		BuildCond: func(param string, start time.Time, end time.Time, _ int) string {
 			return fmt.Sprintf("黄金价格在 从 %s 到 %s 相对基准 %s", formatTime(start), formatTime(end), priceDirectionLabel(param))
@@ -78,7 +78,7 @@ var templates = map[string]Template{
 		OptionNo:  "NO",
 		Params:    []string{"1.5", "3", "5"},
 		BuildDesc: func(param string, _ time.Time, end time.Time, _ int) string {
-			return fmt.Sprintf("%s 前黄金波幅超过 %s%%", formatTime(end), param)
+			return fmt.Sprintf("黄金波动 大于 %s%%", param)
 		},
 		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
 			return fmt.Sprintf("周期内波幅 >= %s%% (截至 %s)", param, formatTime(end))
@@ -92,7 +92,7 @@ var templates = map[string]Template{
 		OptionNo:  "NO",
 		Params:    []string{"300", "500", "800"},
 		BuildDesc: func(param string, _ time.Time, end time.Time, seed int) string {
-			return fmt.Sprintf("%s 当日成交量 %s %s 吨", formatTime(end), operatorForSeed(seed), param)
+			return fmt.Sprintf("黄金成交量 %s %s吨", operatorForSeed(seed), param)
 		},
 		BuildCond: func(param string, _ time.Time, end time.Time, seed int) string {
 			return fmt.Sprintf("指定日成交量 %s %s 吨 (%s)", operatorForSeed(seed), param, formatTime(end))
@@ -111,7 +111,7 @@ var templates = map[string]Template{
 			"BOLL (20,2) 触发 小于 (Below) 0",
 		},
 		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
-			return "指标 " + param
+			return technicalDescription(param)
 		},
 		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
 			return fmt.Sprintf("指标 %s (截至 %s)", strings.Replace(param, "触发 ", "", 1), formatTime(end))
@@ -125,10 +125,10 @@ var templates = map[string]Template{
 		OptionNo:  "NO",
 		Params:    []string{"2500", "2800", "3000"},
 		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
-			return fmt.Sprintf("周期内金价触及 %s USD", param)
+			return fmt.Sprintf("黄金价格 触及 %sUSD/盎司", param)
 		},
 		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
-			return fmt.Sprintf("金价曾触及 %s USD (截至 %s)", param, formatTime(end))
+			return fmt.Sprintf("金价曾触及 %s USD/盎司 (截至 %s)", param, formatTime(end))
 		},
 		DetailedInfo: "模拟用户创建的触价类黄金预测池。",
 	},
@@ -137,9 +137,9 @@ var templates = map[string]Template{
 		Title:     "黄金相对表现预测",
 		OptionYes: "YES",
 		OptionNo:  "NO",
-		Params:    []string{"BTC", "S&P 500", "白银"},
+		Params:    []string{"比特币", "标普500", "白银"},
 		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
-			return fmt.Sprintf("黄金收益率跑赢 %s", param)
+			return fmt.Sprintf("黄金 跑赢 %s", benchmarkShortName(param))
 		},
 		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
 			return fmt.Sprintf("黄金收益率跑赢 %s (截至 %s)", param, formatTime(end))
@@ -153,10 +153,10 @@ var templates = map[string]Template{
 		OptionNo:  "NO",
 		Params:    []string{"2800", "3000", "3200"},
 		BuildDesc: func(param string, _ time.Time, end time.Time, seed int) string {
-			return fmt.Sprintf("截止 %s 金价 %s %s USD", formatTime(end), operatorForSeed(seed), param)
+			return fmt.Sprintf("黄金价格 %s %sUSD/盎司", operatorForSeed(seed), param)
 		},
 		BuildCond: func(param string, _ time.Time, end time.Time, seed int) string {
-			return fmt.Sprintf("黄金价格 %s %s USD (截至 %s)", operatorForSeed(seed), param, formatTime(end))
+			return fmt.Sprintf("黄金价格 %s %s USD/盎司 (截至 %s)", operatorForSeed(seed), param, formatTime(end))
 		},
 		DetailedInfo: "模拟用户创建的到期价格阈值类黄金预测池。",
 	},
@@ -167,7 +167,7 @@ var templates = map[string]Template{
 		OptionNo:  "NO",
 		Params:    []string{"美联储降息", "CPI 低于预期", "美元指数大幅回落"},
 		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
-			return fmt.Sprintf("「%s」是否发生", param)
+			return fmt.Sprintf("发生 %s", param)
 		},
 		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
 			return fmt.Sprintf("事件「%s」是否发生 (截至 %s)", param, formatTime(end))
@@ -209,11 +209,12 @@ func BuildMarket(input BuildMarketInput) (*Market, error) {
 	end := input.Now.Add(input.Duration)
 	desc := tpl.BuildDesc(param, input.Now, end, input.TemplateSeed)
 	condition := tpl.BuildCond(param, input.Now, end, input.TemplateSeed)
+	avatarURL := "template://" + tpl.Type
 	metadata := map[string]any{
 		"type":          tpl.Type,
 		"desc":          desc,
 		"condition":     condition,
-		"avatarUrl":     "",
+		"avatarUrl":     avatarURL,
 		"detailedInfo":  tpl.DetailedInfo,
 		"optionYES":     tpl.OptionYes,
 		"optionNO":      tpl.OptionNo,
@@ -232,6 +233,7 @@ func BuildMarket(input BuildMarketInput) (*Market, error) {
 		IPFSCID:          "sim-" + hex.EncodeToString(sum[:])[:32],
 		Desc:             desc,
 		Condition:        condition,
+		AvatarURL:        avatarURL,
 		DetailedInfo:     tpl.DetailedInfo,
 		OptionYes:        tpl.OptionYes,
 		OptionNo:         tpl.OptionNo,
@@ -255,6 +257,39 @@ func operatorForSeed(seed int) string {
 
 func formatTime(value time.Time) string {
 	return value.Format("2006-01-02 15:04")
+}
+
+func durationDays(start time.Time, end time.Time) string {
+	hours := int64(end.Sub(start).Hours())
+	if hours <= 0 {
+		return ""
+	}
+	days := (hours + 23) / 24
+	return fmt.Sprintf("%d天", days)
+}
+
+func benchmarkShortName(value string) string {
+	switch value {
+	case "比特币", "Bitcoin":
+		return "BTC"
+	default:
+		return value
+	}
+}
+
+func technicalDescription(value string) string {
+	switch {
+	case strings.HasPrefix(value, "RSI"):
+		return "黄金RSI 大于 70"
+	case strings.HasPrefix(value, "MACD"):
+		return "黄金MACD 交叉向上"
+	case strings.HasPrefix(value, "KDJ"):
+		return "黄金KDJ 交叉向下"
+	case strings.HasPrefix(value, "BOLL"):
+		return "黄金BOLL 小于 0"
+	default:
+		return "黄金指标"
+	}
 }
 
 func priceDirectionLabel(direction string) string {

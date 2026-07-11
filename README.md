@@ -188,6 +188,10 @@ scenario:
 
 是否改用 BrokerChain 接口发交易和读链。开启后仍会使用 `private_key` 给随机账户签名。
 
+`ipfs.upload_url`
+
+在 `runtime.on_chain: true` 创建博弈池前，模拟器会把 metadata 上传到此地址，并将返回的 CID 写入链和数据库。默认 `http://127.0.0.1:8081/api/v1/ipfs/add` 使用后端本地内容服务，适合本机联调；如已运行 Kubo，可改为 `http://127.0.0.1:5001/api/v0/add?pin=true`。
+
 `mysql.dsn`
 
 数据库连接串。`mode: execute` 时必须填写。
