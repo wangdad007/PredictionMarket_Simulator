@@ -26,8 +26,8 @@ type Template struct {
 	OptionYes    string
 	OptionNo     string
 	Params       []string
-	BuildDesc    func(param string, end time.Time, seed int) string
-	BuildCond    func(param string, end time.Time, seed int) string
+	BuildDesc    func(param string, start time.Time, end time.Time, seed int) string
+	BuildCond    func(param string, start time.Time, end time.Time, seed int) string
 	DetailedInfo string
 }
 
@@ -60,112 +60,117 @@ var templates = map[string]Template{
 	TypePrice: {
 		Type:      TypePrice,
 		Title:     "黄金价格方向预测",
-		OptionYes: "预测成立 (YES)",
-		OptionNo:  "预测不成立 (NO)",
+		OptionYes: "YES",
+		OptionNo:  "NO",
 		Params:    []string{"上涨", "下跌", "持平"},
-		BuildDesc: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("到 %s 黄金价格是否%s", end.Format("2006-01-02 15:04"), param)
+		BuildDesc: func(param string, start time.Time, end time.Time, _ int) string {
+			return fmt.Sprintf("%s 至 %s 黄金价格 %s", formatTime(start), formatTime(end), param)
 		},
-		BuildCond: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("黄金价格在截止时间 %s 的方向为%s", end.Format("2006-01-02 15:04"), param)
+		BuildCond: func(param string, start time.Time, end time.Time, _ int) string {
+			return fmt.Sprintf("黄金价格在 从 %s 到 %s 相对基准 %s", formatTime(start), formatTime(end), priceDirectionLabel(param))
 		},
 		DetailedInfo: "模拟用户创建的方向类黄金预测池。",
 	},
 	TypeVolatility: {
 		Type:      TypeVolatility,
 		Title:     "黄金波动率预测",
-		OptionYes: "波动达标 (YES)",
-		OptionNo:  "波动未达标 (NO)",
+		OptionYes: "YES",
+		OptionNo:  "NO",
 		Params:    []string{"1.5", "3", "5"},
-		BuildDesc: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("到 %s 黄金价格波动是否达到 %s%%", end.Format("2006-01-02 15:04"), param)
+		BuildDesc: func(param string, _ time.Time, end time.Time, _ int) string {
+			return fmt.Sprintf("%s 前黄金波幅超过 %s%%", formatTime(end), param)
 		},
-		BuildCond: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("黄金价格波动幅度 >= %s%%，观察期截至 %s", param, end.Format("2006-01-02 15:04"))
+		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
+			return fmt.Sprintf("周期内波幅 >= %s%% (截至 %s)", param, formatTime(end))
 		},
 		DetailedInfo: "模拟用户创建的波动率类黄金预测池。",
 	},
 	TypeVolume: {
 		Type:      TypeVolume,
 		Title:     "黄金交易量预测",
-		OptionYes: "交易量达标 (YES)",
-		OptionNo:  "交易量未达标 (NO)",
+		OptionYes: "YES",
+		OptionNo:  "NO",
 		Params:    []string{"300", "500", "800"},
-		BuildDesc: func(param string, end time.Time, seed int) string {
-			return fmt.Sprintf("%s 黄金交易量是否%s %s 吨", end.Format("2006-01-02"), operatorForSeed(seed), param)
+		BuildDesc: func(param string, _ time.Time, end time.Time, seed int) string {
+			return fmt.Sprintf("%s 当日成交量 %s %s 吨", formatTime(end), operatorForSeed(seed), param)
 		},
-		BuildCond: func(param string, end time.Time, seed int) string {
-			return fmt.Sprintf("黄金交易量 %s %s 吨，观察日 %s", operatorForSeed(seed), param, end.Format("2006-01-02"))
+		BuildCond: func(param string, _ time.Time, end time.Time, seed int) string {
+			return fmt.Sprintf("指定日成交量 %s %s 吨 (%s)", operatorForSeed(seed), param, formatTime(end))
 		},
 		DetailedInfo: "模拟用户创建的交易量类黄金预测池。",
 	},
 	TypeTechnical: {
 		Type:      TypeTechnical,
 		Title:     "黄金技术指标预测",
-		OptionYes: "指标条件成立 (YES)",
-		OptionNo:  "指标条件不成立 (NO)",
-		Params:    []string{"RSI 高于 70", "MACD 上穿信号线", "KDJ 死叉", "BOLL 跌破下轨"},
-		BuildDesc: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("到 %s 黄金技术指标是否出现：%s", end.Format("2006-01-02 15:04"), param)
+		OptionYes: "YES",
+		OptionNo:  "NO",
+		Params: []string{
+			"RSI (14) 触发 大于 (Above) 70",
+			"MACD (12,26,9) 触发 交叉向上 (Cross Up) 0",
+			"KDJ (9,3,3) 触发 交叉向下 (Cross Down) 0",
+			"BOLL (20,2) 触发 小于 (Below) 0",
 		},
-		BuildCond: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("黄金技术指标条件 %s，观察期截至 %s", param, end.Format("2006-01-02 15:04"))
+		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
+			return "指标 " + param
+		},
+		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
+			return fmt.Sprintf("指标 %s (截至 %s)", strings.Replace(param, "触发 ", "", 1), formatTime(end))
 		},
 		DetailedInfo: "模拟用户创建的技术指标类黄金预测池。",
 	},
 	TypeTouch: {
 		Type:      TypeTouch,
 		Title:     "黄金触价预测",
-		OptionYes: "触及价格 (YES)",
-		OptionNo:  "未触及价格 (NO)",
+		OptionYes: "YES",
+		OptionNo:  "NO",
 		Params:    []string{"2500", "2800", "3000"},
-		BuildDesc: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("黄金是否会在 %s 前触及 %s USD", end.Format("2006-01-02 15:04"), param)
+		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
+			return fmt.Sprintf("周期内金价触及 %s USD", param)
 		},
-		BuildCond: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("黄金价格在观察期内触及 %s USD，观察期截至 %s", param, end.Format("2006-01-02 15:04"))
+		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
+			return fmt.Sprintf("金价曾触及 %s USD (截至 %s)", param, formatTime(end))
 		},
 		DetailedInfo: "模拟用户创建的触价类黄金预测池。",
 	},
 	TypeRelative: {
 		Type:      TypeRelative,
 		Title:     "黄金相对表现预测",
-		OptionYes: "黄金跑赢 (YES)",
-		OptionNo:  "黄金未跑赢 (NO)",
+		OptionYes: "YES",
+		OptionNo:  "NO",
 		Params:    []string{"BTC", "S&P 500", "白银"},
-		BuildDesc: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("到 %s 黄金表现是否跑赢 %s", end.Format("2006-01-02 15:04"), param)
+		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
+			return fmt.Sprintf("黄金收益率跑赢 %s", param)
 		},
-		BuildCond: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("黄金收益率高于 %s，观察期截至 %s", param, end.Format("2006-01-02 15:04"))
+		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
+			return fmt.Sprintf("黄金收益率跑赢 %s (截至 %s)", param, formatTime(end))
 		},
 		DetailedInfo: "模拟用户创建的相对表现类黄金预测池。",
 	},
 	TypePriceThreshold: {
 		Type:      TypePriceThreshold,
 		Title:     "黄金价格阈值预测",
-		OptionYes: "价格满足条件 (YES)",
-		OptionNo:  "价格不满足条件 (NO)",
+		OptionYes: "YES",
+		OptionNo:  "NO",
 		Params:    []string{"2800", "3000", "3200"},
-		BuildDesc: func(param string, end time.Time, seed int) string {
-			return fmt.Sprintf("到 %s 黄金价格是否%s %s USD", end.Format("2006-01-02 15:04"), operatorForSeed(seed), param)
+		BuildDesc: func(param string, _ time.Time, end time.Time, seed int) string {
+			return fmt.Sprintf("截止 %s 金价 %s %s USD", formatTime(end), operatorForSeed(seed), param)
 		},
-		BuildCond: func(param string, end time.Time, seed int) string {
-			return fmt.Sprintf("到期时黄金价格 %s %s USD，截止时间 %s", operatorForSeed(seed), param, end.Format("2006-01-02 15:04"))
+		BuildCond: func(param string, _ time.Time, end time.Time, seed int) string {
+			return fmt.Sprintf("黄金价格 %s %s USD (截至 %s)", operatorForSeed(seed), param, formatTime(end))
 		},
 		DetailedInfo: "模拟用户创建的到期价格阈值类黄金预测池。",
 	},
 	TypeEvent: {
 		Type:      TypeEvent,
 		Title:     "宏观事件预测",
-		OptionYes: "事件发生 (YES)",
-		OptionNo:  "事件未发生 (NO)",
+		OptionYes: "YES",
+		OptionNo:  "NO",
 		Params:    []string{"美联储降息", "CPI 低于预期", "美元指数大幅回落"},
-		BuildDesc: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("%s 前是否发生：%s", end.Format("2006-01-02 15:04"), param)
+		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
+			return fmt.Sprintf("「%s」是否发生", param)
 		},
-		BuildCond: func(param string, end time.Time, _ int) string {
-			return fmt.Sprintf("事件“%s”在 %s 前发生", param, end.Format("2006-01-02 15:04"))
+		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
+			return fmt.Sprintf("事件「%s」是否发生 (截至 %s)", param, formatTime(end))
 		},
 		DetailedInfo: "模拟用户创建的宏观事件类黄金预测池。",
 	},
@@ -202,8 +207,8 @@ func BuildMarket(input BuildMarketInput) (*Market, error) {
 	}
 	param := tpl.Params[input.TemplateSeed%len(tpl.Params)]
 	end := input.Now.Add(input.Duration)
-	desc := tpl.BuildDesc(param, end, input.TemplateSeed)
-	condition := tpl.BuildCond(param, end, input.TemplateSeed)
+	desc := tpl.BuildDesc(param, input.Now, end, input.TemplateSeed)
+	condition := tpl.BuildCond(param, input.Now, end, input.TemplateSeed)
 	metadata := map[string]any{
 		"type":          tpl.Type,
 		"desc":          desc,
@@ -240,10 +245,27 @@ func BuildMarket(input BuildMarketInput) (*Market, error) {
 func operatorForSeed(seed int) string {
 	switch seed % 3 {
 	case 1:
-		return "低于"
+		return "小于"
 	case 2:
 		return "等于"
 	default:
-		return "高于"
+		return "大于"
+	}
+}
+
+func formatTime(value time.Time) string {
+	return value.Format("2006-01-02 15:04")
+}
+
+func priceDirectionLabel(direction string) string {
+	switch direction {
+	case "上涨":
+		return "上涨 (Price Up)"
+	case "下跌":
+		return "下跌 (Price Down)"
+	case "持平":
+		return "持平 (Flat/Range)"
+	default:
+		return direction
 	}
 }

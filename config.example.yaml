@@ -1,48 +1,57 @@
-# Copy this file to config.yaml and adjust values for your test environment.
+# 复制为 config.yaml 后使用。默认只生成预览计划，不写数据库、不发送链上交易。
+# 流程：先 preview 检查 plan_file，再改 execute 执行同一批数据。
 runtime:
-  # Allows execute mode to run. This is a simulator safety switch, not a frontend display switch.
+  # 执行安全开关；preview 模式不受此项限制。
   enabled: true
-  # preview: generate a reviewable plan file only.
-  # execute: read plan_file and apply the exact same data.
+  # preview：只生成计划；execute：读取 plan_file 并执行。
   mode: "preview"
-  # true during execute: call createGame/buyShares on chain and sync DB.
-  # false during execute: write the approved simulated data to DB only.
+  # execute 时是否上链。false 仅写 MySQL；true 上链后同步 MySQL。
   on_chain: false
+  # preview 写入、execute 读取；含模拟账户私钥，仅限本地使用。
   plan_file: "out/simulator-plan.json"
-  # Must be true together with mode=execute and on_chain=true.
+  # 真实上链的二次确认；需与 mode=execute、on_chain=true 同时开启。
   approve_on_chain: false
-  # Legacy alias for preview mode. Keep false when using runtime.mode.
+  # 旧版预览开关；保持 false，统一使用 mode。
   dry_run: false
 
 chain:
-  # Required only when mode=execute and on_chain=true.
-  # This account funds random users first.
+  # 仅真实上链必填：用于给模拟账户发测试币。不要提交私钥。
   private_key: "replace-with-funded-private-key"
+  # 预测市场合约地址；DB-only 模式也会写入该地址。
   contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+  # use_broker_chain=false 的真实上链 RPC 地址。
   rpc_url: "http://127.0.0.1:8545"
+  # use_broker_chain=true 的 BrokerChain 网关地址。
   broker_chain_url: "https://dash.broker-chain.com:440/"
+  # false 使用 rpc_url；true 使用 broker_chain_url。
   use_broker_chain: false
 
 mysql:
-  # Required when mode=execute.
+  # execute 必填，且必须含数据库名。
   dsn: ""
+  # 连接池最大连接数。
   max_open_connections: 10
+  # 连接池最大空闲连接数。
   max_idle_connections: 2
+  # 单连接最长复用时间（秒）。
   connection_max_lifetime_seconds: 300
 
 scenario:
-  # create_and_trade: random users create new markets and then buy.
-  # trade_existing: random users only buy configured existing_game_ids.
-  # In preview mode, you can also run with -interactive and choose this in the terminal.
+  # create_and_trade：创建新池并交易；trade_existing：交易已有池。
+  # trade_existing 在 execute 时必须 on_chain=true；preview 可在终端临时选择。
   type: "create_and_trade"
+  # create_and_trade 创建的市场数。
   market_count: 3
+  # trade_existing 要交易的已有 game_id，例如 [1, 2, 3]。
   existing_game_ids: []
+  # 随机账户数；creator_also_trades=false 时至少为 2。
   participants: 8
+  # 每个市场的交易笔数范围，最小值不能大于最大值。
   trades_per_market_min: 5
   trades_per_market_max: 15
 
 market:
-  # Empty means use all supported types.
+  # 可随机创建的市场模板；留空 [] 使用全部支持类型。
   types:
     - "TYPE_PRICE"
     - "TYPE_VOLATILITY"
@@ -52,16 +61,22 @@ market:
     - "TYPE_RELATIVE"
     - "TYPE_PRICE_THRESHOLD"
     - "TYPE_EVENT"
+  # 初始流动性随机范围（BKC）；字符串避免小数精度问题。
   initial_liquidity_min_bkc: "3"
   initial_liquidity_max_bkc: "12"
+  # 市场持续时间随机范围（秒）；3600 为 1 小时，86400 为 1 天。
   duration_min_seconds: 3600
   duration_max_seconds: 86400
 
 trade:
+  # 单笔买入金额随机范围（BKC）；字符串避免小数精度问题。
   buy_min_bkc: "0.2"
   buy_max_bkc: "2"
+  # 创建者是否参与自己创建的市场。
   creator_also_trades: false
 
 timing:
+  # 每笔操作之间的间隔（秒，可为小数）。
   pause_seconds: 0.2
+  # 整次模拟的总超时（秒）。
   timeout_seconds: 120
