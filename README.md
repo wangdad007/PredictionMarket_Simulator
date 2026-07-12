@@ -162,7 +162,11 @@ scenario:
 
 `runtime.plan_file`
 
-预览阶段写入、执行阶段读取的计划文件。执行阶段不会重新随机生成数据。
+预览阶段写入、执行阶段读取的计划文件；是否在执行前覆盖它由 `regenerate_plan_on_execute` 控制。
+
+`runtime.regenerate_plan_on_execute`
+
+控制 execute 模式是否在每次启动时重新生成随机计划。设置为 `true` 时，`go run .` 会生成新的账户、市场模板顺序、参数、持续时间、流动性和交易，并覆盖 `plan_file` 后立即执行；设置为 `false` 时会重复执行已有计划，适合复现问题。真实上链时开启该选项会在每次运行创建新市场，请谨慎使用。
 
 `runtime.approve_on_chain`
 

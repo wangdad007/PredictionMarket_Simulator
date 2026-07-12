@@ -27,12 +27,13 @@ const (
 
 type rawConfig struct {
 	Runtime struct {
-		Enabled        bool   `yaml:"enabled"`
-		Mode           string `yaml:"mode"`
-		OnChain        bool   `yaml:"on_chain"`
-		DryRun         bool   `yaml:"dry_run"`
-		PlanFile       string `yaml:"plan_file"`
-		ApproveOnChain bool   `yaml:"approve_on_chain"`
+		Enabled                 bool   `yaml:"enabled"`
+		Mode                    string `yaml:"mode"`
+		OnChain                 bool   `yaml:"on_chain"`
+		DryRun                  bool   `yaml:"dry_run"`
+		PlanFile                string `yaml:"plan_file"`
+		RegeneratePlanOnExecute bool   `yaml:"regenerate_plan_on_execute"`
+		ApproveOnChain          bool   `yaml:"approve_on_chain"`
 	} `yaml:"runtime"`
 	Chain struct {
 		PrivateKey      string `yaml:"private_key"`
@@ -88,12 +89,13 @@ type Config struct {
 }
 
 type RuntimeConfig struct {
-	Enabled        bool
-	Mode           string
-	OnChain        bool
-	DryRun         bool
-	PlanFile       string
-	ApproveOnChain bool
+	Enabled                 bool
+	Mode                    string
+	OnChain                 bool
+	DryRun                  bool
+	PlanFile                string
+	RegeneratePlanOnExecute bool
+	ApproveOnChain          bool
 }
 
 type ChainConfig struct {
@@ -327,12 +329,13 @@ func validateBKCAmountRange(name string, minRaw string, maxRaw string) error {
 func buildConfig(raw *rawConfig) *Config {
 	return &Config{
 		Runtime: RuntimeConfig{
-			Enabled:        raw.Runtime.Enabled,
-			Mode:           raw.Runtime.Mode,
-			OnChain:        raw.Runtime.OnChain,
-			DryRun:         raw.Runtime.DryRun || raw.Runtime.Mode == ModePreview,
-			PlanFile:       strings.TrimSpace(raw.Runtime.PlanFile),
-			ApproveOnChain: raw.Runtime.ApproveOnChain,
+			Enabled:                 raw.Runtime.Enabled,
+			Mode:                    raw.Runtime.Mode,
+			OnChain:                 raw.Runtime.OnChain,
+			DryRun:                  raw.Runtime.DryRun || raw.Runtime.Mode == ModePreview,
+			PlanFile:                strings.TrimSpace(raw.Runtime.PlanFile),
+			RegeneratePlanOnExecute: raw.Runtime.RegeneratePlanOnExecute,
+			ApproveOnChain:          raw.Runtime.ApproveOnChain,
 		},
 		Chain: ChainConfig{
 			PrivateKey:      strings.TrimSpace(raw.Chain.PrivateKey),

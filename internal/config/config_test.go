@@ -14,6 +14,7 @@ func TestLoadReadsSimulatorConfig(t *testing.T) {
   on_chain: false
   dry_run: true
   plan_file: "out/custom-plan.json"
+  regenerate_plan_on_execute: true
   approve_on_chain: false
 chain:
   private_key: "replace-with-private-key"
@@ -54,7 +55,8 @@ timing:
 	if !cfg.Runtime.Enabled || cfg.Runtime.OnChain || !cfg.Runtime.DryRun {
 		t.Fatalf("unexpected runtime config: %+v", cfg.Runtime)
 	}
-	if cfg.Runtime.Mode != ModePreview || cfg.Runtime.PlanFile != "out/custom-plan.json" || cfg.Runtime.ApproveOnChain {
+	if cfg.Runtime.Mode != ModePreview || cfg.Runtime.PlanFile != "out/custom-plan.json" ||
+		!cfg.Runtime.RegeneratePlanOnExecute || cfg.Runtime.ApproveOnChain {
 		t.Fatalf("unexpected preview runtime config: %+v", cfg.Runtime)
 	}
 	if cfg.Scenario.Type != ScenarioCreateAndTrade || cfg.Scenario.MarketCount != 2 || cfg.Scenario.Participants != 5 {

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -211,17 +212,21 @@ func BuildMarket(input BuildMarketInput) (*Market, error) {
 	condition := tpl.BuildCond(param, input.Now, end, input.TemplateSeed)
 	avatarURL := "template://" + tpl.Type
 	metadata := map[string]any{
-		"type":          tpl.Type,
-		"desc":          desc,
-		"condition":     condition,
-		"avatarUrl":     avatarURL,
-		"detailedInfo":  tpl.DetailedInfo,
-		"optionYES":     tpl.OptionYes,
-		"optionNO":      tpl.OptionNo,
-		"creator":       input.Creator,
-		"initialBKC":    input.InitialBKC,
-		"durationSec":   int64(input.Duration / time.Second),
-		"templateParam": param,
+		"type":           tpl.Type,
+		"desc":           desc,
+		"condition":      condition,
+		"avatarUrl":      avatarURL,
+		"detailedInfo":   tpl.DetailedInfo,
+		"optionYES":      tpl.OptionYes,
+		"optionNO":       tpl.OptionNo,
+		"creator":        input.Creator,
+		"initialBKC":     input.InitialBKC,
+		"durationSec":    int64(input.Duration / time.Second),
+		"templateParam":  param,
+		"resolutionRule": buildResolutionRule(tpl.Type, param, input.Now, end, input.TemplateSeed),
+	}
+	if sources := authoritativeSources(tpl.Type, param); len(sources) > 0 {
+		metadata["authoritativeSources"] = sources
 	}
 	raw, err := json.Marshal(metadata)
 	if err != nil {
@@ -242,6 +247,82 @@ func BuildMarket(input BuildMarketInput) (*Market, error) {
 		InitialLiquidity: input.InitialBKC,
 		MetadataJSON:     string(raw),
 	}, nil
+}
+
+func authoritativeSources(typ, param string) []string {
+	if typ == TypeEvent {
+		if strings.Contains(param, "美联储") {
+			return []string{"https://www.federalreserve.gov/newsevents/pressreleases.htm"}
+		}
+		if strings.Contains(strings.ToUpper(param), "CPI") {
+			return []string{"https://www.bls.gov/cpi/"}
+		}
+	}
+	return nil
+}
+
+func buildResolutionRule(typ, param string, start, end time.Time, seed int) map[string]any {
+	rule := map[string]any{
+		"type": typ, "symbol": "XAU", "source": "GOLD_API",
+		"start_time_sec": start.Unix(), "end_time_sec": end.Unix(),
+	}
+	switch typ {
+	case TypePrice:
+		rule["direction"] = map[string]string{"上涨": "UP", "下跌": "DOWN", "持平": "FLAT"}[param]
+		rule["flat_tolerance_percent"] = 0.1
+	case TypeVolatility:
+		rule["operator"], rule["threshold"] = "GTE", numericParam(param)
+	case TypeVolume:
+		rule["symbol"], rule["source"] = "COMEX_GC", "CME_GROUP"
+		rule["operator"], rule["threshold"] = canonicalOperator(seed), numericParam(param)
+		rule["volume_unit"] = "METRIC_TON_EQUIVALENT"
+	case TypeTechnical:
+		rule["indicator"] = strings.Fields(param)[0]
+		rule["operator"] = technicalOperator(param)
+		rule["interval"] = "hour"
+	case TypeTouch:
+		rule["threshold"] = numericParam(param)
+	case TypeRelative:
+		rule["benchmark"] = benchmarkShortName(param)
+	case TypePriceThreshold:
+		rule["operator"], rule["threshold"] = canonicalOperator(seed), numericParam(param)
+	case TypeEvent:
+		rule["source"] = "AUTHORITATIVE_DOCUMENTS"
+		rule["event"] = param
+		if sources := authoritativeSources(typ, param); len(sources) > 0 {
+			rule["authoritative_sources"] = sources
+		}
+	}
+	return rule
+}
+
+func numericParam(value string) float64 {
+	parsed, _ := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	return parsed
+}
+
+func canonicalOperator(seed int) string {
+	switch seed % 3 {
+	case 1:
+		return "LT"
+	case 2:
+		return "EQ"
+	default:
+		return "GT"
+	}
+}
+
+func technicalOperator(value string) string {
+	switch {
+	case strings.Contains(value, "交叉向上"):
+		return "CROSS_UP"
+	case strings.Contains(value, "交叉向下"):
+		return "CROSS_DOWN"
+	case strings.Contains(value, "小于"):
+		return "LT"
+	default:
+		return "GT"
+	}
 }
 
 func operatorForSeed(seed int) string {

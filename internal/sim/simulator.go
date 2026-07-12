@@ -28,6 +28,7 @@ type Simulator struct {
 	cfg              *config.Config
 	log              Logger
 	rng              *mrand.Rand
+	marketTypes      []string
 	metadataUploader metadataUploader
 }
 
@@ -49,12 +50,17 @@ type offchainMarketState struct {
 }
 
 func New(cfg *config.Config, logger Logger) *Simulator {
-	return &Simulator{
+	simulator := &Simulator{
 		cfg:              cfg,
 		log:              logger,
 		rng:              mrand.New(mrand.NewSource(time.Now().UnixNano())),
 		metadataUploader: ipfs.NewUploader(cfg.IPFS.UploadURL),
 	}
+	simulator.marketTypes = append([]string(nil), cfg.Market.Types...)
+	simulator.rng.Shuffle(len(simulator.marketTypes), func(i, j int) {
+		simulator.marketTypes[i], simulator.marketTypes[j] = simulator.marketTypes[j], simulator.marketTypes[i]
+	})
+	return simulator
 }
 
 func (s *Simulator) Run(ctx context.Context) error {
@@ -77,11 +83,27 @@ func (s *Simulator) Run(ctx context.Context) error {
 		return nil
 	}
 
-	plan, err := readPlan(s.cfg.Runtime.PlanFile)
+	plan, err := s.prepareExecutionPlan()
 	if err != nil {
 		return err
 	}
 	return s.executePlan(ctx, plan)
+}
+
+func (s *Simulator) prepareExecutionPlan() (*Plan, error) {
+	if !s.cfg.Runtime.RegeneratePlanOnExecute {
+		return readPlan(s.cfg.Runtime.PlanFile)
+	}
+	plan, err := s.buildPlan()
+	if err != nil {
+		return nil, err
+	}
+	if err := writePlan(s.cfg.Runtime.PlanFile, plan); err != nil {
+		return nil, err
+	}
+	s.logPlan(plan)
+	s.logf("simulator: generated a fresh execution plan and replaced %s", s.cfg.Runtime.PlanFile)
+	return plan, nil
 }
 
 func (s *Simulator) buildPlan() (*Plan, error) {
@@ -454,7 +476,11 @@ func (s *Simulator) buildMarket(index int, creator string) (*scenario.Market, *b
 		return nil, nil, err
 	}
 	duration := randomDurationInRange(s.rng, s.cfg.Market.DurationMin, s.cfg.Market.DurationMax)
-	typ := s.cfg.Market.Types[index%len(s.cfg.Market.Types)]
+	marketTypes := s.marketTypes
+	if len(marketTypes) == 0 {
+		marketTypes = s.cfg.Market.Types
+	}
+	typ := marketTypes[index%len(marketTypes)]
 	market, err := scenario.BuildMarket(scenario.BuildMarketInput{
 		Type:         typ,
 		Index:        index + 1,

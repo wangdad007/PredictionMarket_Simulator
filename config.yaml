@@ -13,6 +13,9 @@ runtime:
   # preview 写入、execute 读取的计划文件；含模拟账户私钥，仅限本地使用。
   plan_file: "out/simulator-plan.json"
 
+  # true：execute 每次启动都重新随机生成并覆盖 plan_file；false：重复执行已有计划。
+  regenerate_plan_on_execute: true
+
   # 真实上链的二次确认；需与 mode=execute、on_chain=true 同时开启。
   approve_on_chain: false
 

@@ -3,6 +3,7 @@ package sim
 import (
 	"context"
 	"math/big"
+	"math/rand"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,6 +12,69 @@ import (
 	dbwriter "predictionmarket-simulator/internal/db"
 	"predictionmarket-simulator/internal/scenario"
 )
+
+func TestPrepareExecutionPlanRegeneratesInsteadOfReadingExistingPlan(t *testing.T) {
+	planFile := filepath.Join(t.TempDir(), "simulator-plan.json")
+	stale := &Plan{
+		Version: planVersion, GeneratedAt: "stale", Scenario: config.ScenarioCreateAndTrade,
+		Participants: []PlanParticipant{{Index: 0, Address: "stale", PrivateKey: "stale"}},
+		Markets:      []PlanMarket{{Index: 1, IPFSCID: "stale", Trades: []PlanTrade{}}},
+	}
+	if err := writePlan(planFile, stale); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Runtime: config.RuntimeConfig{
+			Enabled: true, Mode: config.ModeExecute, PlanFile: planFile,
+			RegeneratePlanOnExecute: true,
+		},
+		Scenario: config.ScenarioConfig{
+			Type: config.ScenarioCreateAndTrade, MarketCount: 1, Participants: 2,
+			TradesPerMarketMin: 1, TradesPerMarketMax: 1,
+		},
+		Market: config.MarketConfig{
+			Types: []string{"TYPE_PRICE"}, InitialLiquidityMinBKC: "1", InitialLiquidityMaxBKC: "1",
+			DurationMin: time.Hour, DurationMax: time.Hour,
+		},
+		Trade: config.TradeConfig{BuyMinBKC: "0.1", BuyMaxBKC: "0.1"},
+	}
+	simulator := New(cfg, nil)
+	simulator.rng = rand.New(rand.NewSource(1))
+	plan, err := simulator.prepareExecutionPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.GeneratedAt == "stale" || len(plan.Participants) != 2 || plan.Participants[0].Address == "stale" {
+		t.Fatalf("execution reused stale plan: %+v", plan)
+	}
+	saved, err := readPlan(planFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Participants[0].Address != plan.Participants[0].Address {
+		t.Fatal("fresh execution plan was not persisted")
+	}
+}
+
+func TestPrepareExecutionPlanReusesPlanWhenRegenerationDisabled(t *testing.T) {
+	planFile := filepath.Join(t.TempDir(), "simulator-plan.json")
+	want := &Plan{
+		Version: planVersion, GeneratedAt: "replay", Scenario: config.ScenarioCreateAndTrade,
+		Participants: []PlanParticipant{{Index: 0, Address: "saved", PrivateKey: "saved"}},
+		Markets:      []PlanMarket{{Index: 1, IPFSCID: "saved", Trades: []PlanTrade{}}},
+	}
+	if err := writePlan(planFile, want); err != nil {
+		t.Fatal(err)
+	}
+	simulator := New(&config.Config{Runtime: config.RuntimeConfig{PlanFile: planFile}}, nil)
+	got, err := simulator.prepareExecutionPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GeneratedAt != "replay" || got.Participants[0].Address != "saved" {
+		t.Fatalf("saved plan was not reused: %+v", got)
+	}
+}
 
 func TestExecuteOffchainTradeMatchesContractBuyYesFormula(t *testing.T) {
 	initial := big.NewInt(100)
@@ -118,8 +182,12 @@ func TestRunPreviewWritesReviewablePlanFile(t *testing.T) {
 	if len(plan.Markets) != 2 {
 		t.Fatalf("markets = %d, want 2", len(plan.Markets))
 	}
-	if got := plan.Markets[0].Type; got != "TYPE_PRICE" {
-		t.Fatalf("first market type = %q, want TYPE_PRICE", got)
+	marketTypes := map[string]bool{}
+	for _, market := range plan.Markets {
+		marketTypes[market.Type] = true
+	}
+	if !marketTypes["TYPE_PRICE"] || !marketTypes["TYPE_EVENT"] {
+		t.Fatalf("preview did not include configured market types: %+v", marketTypes)
 	}
 	if len(plan.Markets[0].Trades) != 1 {
 		t.Fatalf("first market trades = %d, want 1", len(plan.Markets[0].Trades))
