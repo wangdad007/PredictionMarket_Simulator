@@ -1,14 +1,16 @@
-# 预测市场数据模拟器。本配置默认只生成预览计划，不写数据库、不发送链上交易。
-# 标准流程：先 preview 生成并检查 plan_file，再改为 execute 执行同一批数据。
+# 预测市场数据模拟器。本配置默认以 DB-only 常驻模式持续生成测试市场与交易。
 runtime:
   # 执行安全开关；preview 模式不受此项限制。
   enabled: true
 
-  # preview：只生成计划；execute：读取 plan_file 并执行，不重新随机。
+  # preview：只生成计划；execute：按 regenerate_plan_on_execute 决定生成新计划或复用旧计划。
   mode: "execute"
 
+  # true：常驻运行，反复生成新一轮市场与延迟交易；false：执行一轮后退出。
+  continuous: true
+
   # execute 时是否调用合约。false 仅写 MySQL；true 上链后同步 MySQL。
-  on_chain: false
+  on_chain: true
 
   # preview 写入、execute 读取的计划文件；含模拟账户私钥，仅限本地使用。
   plan_file: "out/simulator-plan.json"
@@ -17,7 +19,7 @@ runtime:
   regenerate_plan_on_execute: true
 
   # 真实上链的二次确认；需与 mode=execute、on_chain=true 同时开启。
-  approve_on_chain: false
+  approve_on_chain: true
 
   # 旧版预览开关；保持 false，统一使用 mode。
   dry_run: false
@@ -30,7 +32,7 @@ chain:
   contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
 
   # use_broker_chain=false 的真实上链 RPC 地址。
-  rpc_url: "http://127.0.0.1:8545"
+  rpc_url: "http://127.0.0.1:42515"
 
   # use_broker_chain=true 的 BrokerChain 网关地址。
   broker_chain_url: "https://dash.broker-chain.com:440/"
@@ -58,7 +60,7 @@ ipfs:
 
 scenario:
   # create_and_trade：创建新池并交易；trade_existing：交易 existing_game_ids。
-  # 后者在 execute 时必须 on_chain=true；preview 可在终端临时选择。
+  # DB-only 从 MySQL 恢复已有池状态；on_chain=true 时直接读取并交易链上池。
   type: "create_and_trade"
 
   # create_and_trade 创建的市场数。
@@ -80,23 +82,21 @@ market:
   # 可随机创建的市场模板；留空 [] 使用全部支持类型。
   types:
     - "TYPE_PRICE"
-    - "TYPE_VOLATILITY"
-    - "TYPE_VOLUME"
-    - "TYPE_TECHNICAL"
-    - "TYPE_TOUCH"
-    - "TYPE_RELATIVE"
+    - "TYPE_RETURN_THRESHOLD"
     - "TYPE_PRICE_THRESHOLD"
-    - "TYPE_EVENT"
+    - "TYPE_PRICE_RANGE"
+    - "TYPE_RELATIVE"
+    - "TYPE_STREAK"
 
   # 初始流动性随机范围（BKC）；字符串避免小数精度问题。
   initial_liquidity_min_bkc: "3"
 
   initial_liquidity_max_bkc: "12"
 
-  # 市场持续时间随机范围（秒）；3600 为 1 小时，86400 为 1 天。
-  duration_min_seconds: 3600
+  # 观察期按整天生成；可配置 1-4 天，起止自动归一到北京时间有效零点。
+  duration_min_seconds: 86400
 
-  duration_max_seconds: 86400
+  duration_max_seconds: 345600
 
 trade:
   # 单笔买入金额随机范围（BKC）；字符串避免小数精度问题。
@@ -111,5 +111,13 @@ timing:
   # 每笔操作之间的间隔（秒，可为小数），用于降低链和网关压力。
   pause_seconds: 0.2
 
-  # 整次模拟的总超时（秒）。
-  timeout_seconds: 120
+  # 市场创建后，每笔购买相对上一笔购买的随机等待范围（秒）。
+  trade_interval_min_seconds: 10
+  trade_interval_max_seconds: 60
+
+  # 一轮市场和交易完成后，开始下一轮前的随机等待范围（秒）。
+  cycle_interval_min_seconds: 60
+  cycle_interval_max_seconds: 180
+
+  # 单轮模拟的最长执行时间（秒）；常驻模式不会受总运行时长限制。
+  timeout_seconds: 3600

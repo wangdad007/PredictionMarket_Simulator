@@ -67,8 +67,6 @@ func (s *Simulator) Run(ctx context.Context) error {
 	if !s.cfg.Runtime.Enabled && s.cfg.Runtime.Mode != config.ModePreview {
 		return errors.New("runtime.enabled is false; set it true or run in runtime.mode=preview")
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timing.Timeout)
-	defer cancel()
 
 	if s.cfg.Runtime.Mode == config.ModePreview {
 		plan, err := s.buildPlan()
@@ -82,12 +80,56 @@ func (s *Simulator) Run(ctx context.Context) error {
 		s.logf("simulator: preview plan saved to %s; no database writes or chain transactions were sent", s.cfg.Runtime.PlanFile)
 		return nil
 	}
+	if s.cfg.Runtime.Continuous {
+		return s.runContinuous(ctx)
+	}
 
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timing.Timeout)
+	defer cancel()
 	plan, err := s.prepareExecutionPlan()
 	if err != nil {
 		return err
 	}
 	return s.executePlan(ctx, plan)
+}
+
+func (s *Simulator) runContinuous(ctx context.Context) error {
+	s.logf("simulator: continuous mode started trade_interval=%s..%s cycle_interval=%s..%s",
+		s.cfg.Timing.TradeIntervalMin, s.cfg.Timing.TradeIntervalMax,
+		s.cfg.Timing.CycleIntervalMin, s.cfg.Timing.CycleIntervalMax)
+	for round := 1; ; round++ {
+		if ctx.Err() != nil {
+			s.logf("simulator: continuous mode stopped")
+			return nil
+		}
+
+		roundCtx, cancel := context.WithTimeout(ctx, s.cfg.Timing.Timeout)
+		plan, err := s.prepareExecutionPlan()
+		if err == nil {
+			s.logf("simulator: continuous round=%d started", round)
+			err = s.executePlan(roundCtx, plan)
+		}
+		cancel()
+		if ctx.Err() != nil {
+			s.logf("simulator: continuous mode stopped")
+			return nil
+		}
+		if err != nil {
+			s.logf("simulator: continuous round=%d failed: %v", round, err)
+		} else {
+			s.logf("simulator: continuous round=%d completed", round)
+		}
+
+		delay := randomDurationInRange(s.rng, s.cfg.Timing.CycleIntervalMin, s.cfg.Timing.CycleIntervalMax)
+		s.logf("simulator: next continuous round in %s", delay)
+		if err := sleepWithContext(ctx, delay); err != nil {
+			if ctx.Err() != nil {
+				s.logf("simulator: continuous mode stopped")
+				return nil
+			}
+			return err
+		}
+	}
 }
 
 func (s *Simulator) prepareExecutionPlan() (*Plan, error) {
@@ -168,13 +210,10 @@ func (s *Simulator) buildPlannedTrades(participants []participant, creatorIndex 
 		return nil, err
 	}
 	trades := make([]PlanTrade, 0, tradeCount)
+	previousUserIndex := -1
 	for i := 0; i < tradeCount; i++ {
-		userIndex := s.rng.Intn(len(participants))
-		if !s.cfg.Trade.CreatorAlsoTrades && creatorIndex >= 0 {
-			for userIndex == creatorIndex {
-				userIndex = (userIndex + 1) % len(participants)
-			}
-		}
+		userIndex := s.chooseTradeUser(len(participants), creatorIndex, previousUserIndex)
+		previousUserIndex = userIndex
 		optionID := i % 2
 		if s.rng.Intn(2) == 1 {
 			optionID = 1 - optionID
@@ -184,16 +223,40 @@ func (s *Simulator) buildPlannedTrades(participants []participant, creatorIndex 
 			return nil, err
 		}
 		trades = append(trades, PlanTrade{
-			Index:     i + 1,
-			UserIndex: userIndex,
-			User:      participants[userIndex].address,
-			OptionID:  optionID,
-			Option:    optionName(optionID),
-			AmountBKC: weiToDisplayBKC(amountWei),
-			AmountWei: amountWei.String(),
+			Index:        i + 1,
+			UserIndex:    userIndex,
+			User:         participants[userIndex].address,
+			OptionID:     optionID,
+			Option:       optionName(optionID),
+			AmountBKC:    weiToDisplayBKC(amountWei),
+			AmountWei:    amountWei.String(),
+			DelaySeconds: randomDurationInRange(s.rng, s.cfg.Timing.TradeIntervalMin, s.cfg.Timing.TradeIntervalMax).Seconds(),
 		})
 	}
 	return trades, nil
+}
+
+func (s *Simulator) chooseTradeUser(participantCount int, creatorIndex int, previousUserIndex int) int {
+	eligible := make([]int, 0, participantCount)
+	for i := 0; i < participantCount; i++ {
+		if !s.cfg.Trade.CreatorAlsoTrades && i == creatorIndex {
+			continue
+		}
+		eligible = append(eligible, i)
+	}
+	if len(eligible) == 1 {
+		return eligible[0]
+	}
+	if previousUserIndex >= 0 {
+		withoutPrevious := eligible[:0]
+		for _, index := range eligible {
+			if index != previousUserIndex {
+				withoutPrevious = append(withoutPrevious, index)
+			}
+		}
+		eligible = withoutPrevious
+	}
+	return eligible[s.rng.Intn(len(eligible))]
 }
 
 func (s *Simulator) executePlan(ctx context.Context, plan *Plan) error {
@@ -322,18 +385,60 @@ func (s *Simulator) uploadMarketMetadata(ctx context.Context, market *scenario.M
 }
 
 func (s *Simulator) executeExistingTradePlan(ctx context.Context, writer *dbwriter.Writer, participants []participant, plan *Plan) error {
-	if !s.cfg.Runtime.OnChain {
-		return errors.New("trade_existing execution requires runtime.on_chain=true")
-	}
 	for _, plannedMarket := range plan.Markets {
 		if plannedMarket.ExistingGameID <= 0 {
 			return fmt.Errorf("market #%d missing existing_game_id", plannedMarket.Index)
 		}
-		if err := s.executePlannedTradesForMarket(ctx, writer, participants, plannedMarket.ExistingGameID, nil, plannedMarket.Trades); err != nil {
+		var offchain *offchainMarketState
+		if !s.cfg.Runtime.OnChain {
+			stored, err := writer.LoadExistingMarketState(ctx, plannedMarket.ExistingGameID)
+			if err != nil {
+				return err
+			}
+			offchain, err = offchainStateFromStoredMarket(stored)
+			if err != nil {
+				return err
+			}
+		}
+		if err := s.executePlannedTradesForMarket(ctx, writer, participants, plannedMarket.ExistingGameID, offchain, plannedMarket.Trades); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func offchainStateFromStoredMarket(stored *dbwriter.ExistingMarketState) (*offchainMarketState, error) {
+	if stored == nil {
+		return nil, errors.New("existing market state is nil")
+	}
+	if stored.IsResolved {
+		return nil, fmt.Errorf("existing game %d is already resolved", stored.GameID)
+	}
+	if stored.IsRefunded {
+		return nil, fmt.Errorf("existing game %d is already refunded", stored.GameID)
+	}
+	if stored.DeadlineSec <= time.Now().Unix() {
+		return nil, fmt.Errorf("existing game %d has reached its deadline", stored.GameID)
+	}
+	if stored.TotalPool == nil || stored.ReserveYes == nil || stored.ReserveNo == nil ||
+		stored.ReserveYes.Sign() <= 0 || stored.ReserveNo.Sign() <= 0 {
+		return nil, fmt.Errorf("existing game %d has invalid pool reserves", stored.GameID)
+	}
+	return &offchainMarketState{
+		info: &chain.GameInfo{
+			ID:            stored.GameID,
+			IPFSCID:       stored.IPFSCID,
+			TotalPool:     new(big.Int).Set(stored.TotalPool),
+			IsResolved:    stored.IsResolved,
+			IsRefunded:    stored.IsRefunded,
+			WinningOption: stored.WinningOption,
+			DeadlineRaw:   stored.DeadlineSec,
+		},
+		reserveYes:   new(big.Int).Set(stored.ReserveYes),
+		reserveNo:    new(big.Int).Set(stored.ReserveNo),
+		userShares:   map[string][]*big.Int{},
+		nextTradeSeq: stored.ExistingTrades,
+	}, nil
 }
 
 func (s *Simulator) executePlannedTradesForMarket(ctx context.Context, writer *dbwriter.Writer, participants []participant, gameID int, offchain *offchainMarketState, trades []PlanTrade) error {
@@ -352,8 +457,12 @@ func (s *Simulator) executePlannedTradesForMarket(ctx context.Context, writer *d
 		if err != nil {
 			return err
 		}
-		s.logf("simulator: game=%d trade #%d user=%s option=%s amount_wei=%s",
-			gameID, trade.Index, p.address, optionName(trade.OptionID), amountWei.String())
+		delay := time.Duration(trade.DelaySeconds * float64(time.Second))
+		s.logf("simulator: game=%d trade #%d scheduled_in=%s user=%s option=%s amount_wei=%s",
+			gameID, trade.Index, delay, p.address, optionName(trade.OptionID), amountWei.String())
+		if err := sleepWithContext(ctx, delay); err != nil {
+			return err
+		}
 		var record *dbwriter.TradeRecord
 		if s.cfg.Runtime.OnChain {
 			record, err = s.executeOnchainTrade(ctx, p, gameID, trade.OptionID, amountWei)
@@ -450,7 +559,7 @@ func executeOffchainTrade(state *offchainMarketState, userAddress string, option
 		OptionID:         optionID,
 		AmountWei:        new(big.Int).Set(amountWei),
 		ShareAmountWei:   sharesToUser,
-		TxHash:           fmt.Sprintf("sim-%d-%d", state.info.ID, state.nextTradeSeq),
+		TxHash:           fmt.Sprintf("sim-%d-%d-%d", state.info.ID, time.Now().UnixNano(), state.nextTradeSeq),
 		TimestampSec:     time.Now().Unix(),
 		Info:             cloneInfo(state.info),
 		Extra:            extra,
@@ -578,8 +687,8 @@ func (s *Simulator) logPlan(plan *Plan) {
 				market.Index, market.Type, market.CreatorAddress, market.InitialLiquidityBKC, len(market.Trades), market.IPFSCID)
 		}
 		for _, trade := range market.Trades {
-			s.logf("simulator: preview trade #%d user=%s option=%s amount=%s BKC",
-				trade.Index, trade.User, trade.Option, trade.AmountBKC)
+			s.logf("simulator: preview trade #%d after=%.3fs user=%s option=%s amount=%s BKC",
+				trade.Index, trade.DelaySeconds, trade.User, trade.Option, trade.AmountBKC)
 		}
 	}
 }

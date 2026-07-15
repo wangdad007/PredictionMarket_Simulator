@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -38,6 +39,19 @@ type TradeRecord struct {
 	MySharesNoAfter  string
 }
 
+type ExistingMarketState struct {
+	GameID         int
+	IPFSCID        string
+	TotalPool      *big.Int
+	ReserveYes     *big.Int
+	ReserveNo      *big.Int
+	IsResolved     bool
+	IsRefunded     bool
+	WinningOption  int
+	DeadlineSec    int64
+	ExistingTrades int
+}
+
 func Open(ctx context.Context, cfg config.MySQLConfig, contractAddress string) (*Writer, error) {
 	db, err := sql.Open("mysql", cfg.DSN)
 	if err != nil {
@@ -63,6 +77,54 @@ func (w *Writer) NextGameID(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("read max game_id: %w", err)
 	}
 	return int(maxID.Int64) + 1, nil
+}
+
+func (w *Writer) LoadExistingMarketState(ctx context.Context, gameID int) (*ExistingMarketState, error) {
+	var state ExistingMarketState
+	var totalPoolRaw, reserveYesRaw, reserveNoRaw string
+	var resolved, refunded int
+	err := w.db.QueryRowContext(ctx, `SELECT
+		g.game_id, g.ipfs_cid, s.total_pool, s.reserve_yes, s.reserve_no,
+		s.is_resolved, s.is_refunded, s.winning_option, s.deadline_sec,
+		(SELECT COUNT(*) FROM gold_trades t WHERE t.game_id = g.game_id AND LOWER(t.contract_address) = ?)
+		FROM gold_games g
+		JOIN gold_chain_states s ON s.game_id = g.game_id
+			AND LOWER(s.contract_address) = LOWER(g.contract_address)
+		WHERE g.game_id = ? AND LOWER(g.contract_address) = ?`,
+		w.contractAddress, gameID, w.contractAddress,
+	).Scan(
+		&state.GameID, &state.IPFSCID, &totalPoolRaw, &reserveYesRaw, &reserveNoRaw,
+		&resolved, &refunded, &state.WinningOption, &state.DeadlineSec, &state.ExistingTrades,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("existing game %d was not found for contract %s", gameID, w.contractAddress)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load existing game %d: %w", gameID, err)
+	}
+	state.TotalPool, err = parseStoredBigInt("total_pool", totalPoolRaw)
+	if err != nil {
+		return nil, err
+	}
+	state.ReserveYes, err = parseStoredBigInt("reserve_yes", reserveYesRaw)
+	if err != nil {
+		return nil, err
+	}
+	state.ReserveNo, err = parseStoredBigInt("reserve_no", reserveNoRaw)
+	if err != nil {
+		return nil, err
+	}
+	state.IsResolved = resolved != 0
+	state.IsRefunded = refunded != 0
+	return &state, nil
+}
+
+func parseStoredBigInt(field string, raw string) (*big.Int, error) {
+	value := new(big.Int)
+	if _, ok := value.SetString(strings.TrimSpace(raw), 10); !ok || value.Sign() < 0 {
+		return nil, fmt.Errorf("existing market %s is not a non-negative integer", field)
+	}
+	return value, nil
 }
 
 func (w *Writer) SyncCreatedMarket(ctx context.Context, gameID int, market *scenario.Market, info *chain.GameInfo, initialLiquidityWei *big.Int, timestampSec int64) error {

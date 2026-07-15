@@ -3,8 +3,10 @@
 runtime:
   # 执行安全开关；preview 模式不受此项限制。
   enabled: true
-  # preview：只生成计划；execute：读取 plan_file 并执行。
+  # preview：只生成计划；execute：按 regenerate_plan_on_execute 决定生成新计划或复用旧计划。
   mode: "preview"
+  # true：execute 常驻运行并持续生成新轮次；preview 必须保持 false。
+  continuous: false
   # execute 时是否上链。false 仅写 MySQL；true 上链后同步 MySQL。
   on_chain: false
   # preview 写入、execute 读取；含模拟账户私钥，仅限本地使用。
@@ -22,7 +24,7 @@ chain:
   # 预测市场合约地址；DB-only 模式也会写入该地址。
   contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
   # use_broker_chain=false 的真实上链 RPC 地址。
-  rpc_url: "http://127.0.0.1:8545"
+  rpc_url: "http://127.0.0.1:42515"
   # use_broker_chain=true 的 BrokerChain 网关地址。
   broker_chain_url: "https://dash.broker-chain.com:440/"
   # false 使用 rpc_url；true 使用 broker_chain_url。
@@ -45,7 +47,7 @@ ipfs:
 
 scenario:
   # create_and_trade：创建新池并交易；trade_existing：交易已有池。
-  # trade_existing 在 execute 时必须 on_chain=true；preview 可在终端临时选择。
+  # DB-only 从 MySQL 恢复已有池状态；on_chain=true 时直接读取并交易链上池。
   type: "create_and_trade"
   # create_and_trade 创建的市场数。
   market_count: 3
@@ -61,19 +63,17 @@ market:
   # 可随机创建的市场模板；留空 [] 使用全部支持类型。
   types:
     - "TYPE_PRICE"
-    - "TYPE_VOLATILITY"
-    - "TYPE_VOLUME"
-    - "TYPE_TECHNICAL"
-    - "TYPE_TOUCH"
-    - "TYPE_RELATIVE"
+    - "TYPE_RETURN_THRESHOLD"
     - "TYPE_PRICE_THRESHOLD"
-    - "TYPE_EVENT"
+    - "TYPE_PRICE_RANGE"
+    - "TYPE_RELATIVE"
+    - "TYPE_STREAK"
   # 初始流动性随机范围（BKC）；字符串避免小数精度问题。
   initial_liquidity_min_bkc: "3"
   initial_liquidity_max_bkc: "12"
-  # 市场持续时间随机范围（秒）；3600 为 1 小时，86400 为 1 天。
-  duration_min_seconds: 3600
-  duration_max_seconds: 86400
+  # 观察期必须是 1-4 个整天，起止自动使用北京时间有效零点。
+  duration_min_seconds: 86400
+  duration_max_seconds: 345600
 
 trade:
   # 单笔买入金额随机范围（BKC）；字符串避免小数精度问题。
@@ -83,7 +83,13 @@ trade:
   creator_also_trades: false
 
 timing:
-  # 每笔操作之间的间隔（秒，可为小数）。
+  # 单次链或数据库操作完成后的短暂间隔（秒，可为小数）。
   pause_seconds: 0.2
-  # 整次模拟的总超时（秒）。
+  # 每笔购买之间的随机等待范围（秒）；设为 0 表示不额外等待。
+  trade_interval_min_seconds: 0
+  trade_interval_max_seconds: 0
+  # 常驻模式每轮结束后的随机等待范围（秒）。
+  cycle_interval_min_seconds: 0
+  cycle_interval_max_seconds: 0
+  # 单轮模拟超时（秒）；continuous=true 时默认 3600，否则默认 120。
   timeout_seconds: 120

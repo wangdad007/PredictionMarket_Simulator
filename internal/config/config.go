@@ -29,6 +29,7 @@ type rawConfig struct {
 	Runtime struct {
 		Enabled                 bool   `yaml:"enabled"`
 		Mode                    string `yaml:"mode"`
+		Continuous              bool   `yaml:"continuous"`
 		OnChain                 bool   `yaml:"on_chain"`
 		DryRun                  bool   `yaml:"dry_run"`
 		PlanFile                string `yaml:"plan_file"`
@@ -72,8 +73,12 @@ type rawConfig struct {
 		CreatorAlsoTrades bool   `yaml:"creator_also_trades"`
 	} `yaml:"trade"`
 	Timing struct {
-		PauseSeconds   float64 `yaml:"pause_seconds"`
-		TimeoutSeconds int     `yaml:"timeout_seconds"`
+		PauseSeconds            float64 `yaml:"pause_seconds"`
+		TradeIntervalMinSeconds float64 `yaml:"trade_interval_min_seconds"`
+		TradeIntervalMaxSeconds float64 `yaml:"trade_interval_max_seconds"`
+		CycleIntervalMinSeconds float64 `yaml:"cycle_interval_min_seconds"`
+		CycleIntervalMaxSeconds float64 `yaml:"cycle_interval_max_seconds"`
+		TimeoutSeconds          int     `yaml:"timeout_seconds"`
 	} `yaml:"timing"`
 }
 
@@ -91,6 +96,7 @@ type Config struct {
 type RuntimeConfig struct {
 	Enabled                 bool
 	Mode                    string
+	Continuous              bool
 	OnChain                 bool
 	DryRun                  bool
 	PlanFile                string
@@ -141,8 +147,12 @@ type TradeConfig struct {
 }
 
 type TimingConfig struct {
-	Pause   time.Duration
-	Timeout time.Duration
+	Pause            time.Duration
+	TradeIntervalMin time.Duration
+	TradeIntervalMax time.Duration
+	CycleIntervalMin time.Duration
+	CycleIntervalMax time.Duration
+	Timeout          time.Duration
 }
 
 func Load(path string) (*Config, error) {
@@ -199,10 +209,10 @@ func applyDefaults(raw *rawConfig) {
 		raw.Market.InitialLiquidityMaxBKC = "12"
 	}
 	if raw.Market.DurationMinSeconds <= 0 {
-		raw.Market.DurationMinSeconds = 3600
+		raw.Market.DurationMinSeconds = 86400
 	}
 	if raw.Market.DurationMaxSeconds <= 0 {
-		raw.Market.DurationMaxSeconds = 86400
+		raw.Market.DurationMaxSeconds = 4 * 86400
 	}
 	if strings.TrimSpace(raw.Trade.BuyMinBKC) == "" {
 		raw.Trade.BuyMinBKC = "0.2"
@@ -211,7 +221,25 @@ func applyDefaults(raw *rawConfig) {
 		raw.Trade.BuyMaxBKC = "2"
 	}
 	if raw.Timing.TimeoutSeconds <= 0 {
-		raw.Timing.TimeoutSeconds = 120
+		if raw.Runtime.Continuous {
+			raw.Timing.TimeoutSeconds = 3600
+		} else {
+			raw.Timing.TimeoutSeconds = 120
+		}
+	}
+	if raw.Runtime.Continuous {
+		if raw.Timing.TradeIntervalMinSeconds == 0 {
+			raw.Timing.TradeIntervalMinSeconds = 10
+		}
+		if raw.Timing.TradeIntervalMaxSeconds == 0 {
+			raw.Timing.TradeIntervalMaxSeconds = 60
+		}
+		if raw.Timing.CycleIntervalMinSeconds == 0 {
+			raw.Timing.CycleIntervalMinSeconds = 60
+		}
+		if raw.Timing.CycleIntervalMaxSeconds == 0 {
+			raw.Timing.CycleIntervalMaxSeconds = 180
+		}
 	}
 	if raw.MySQL.MaxOpenConnections <= 0 {
 		raw.MySQL.MaxOpenConnections = 10
@@ -236,6 +264,12 @@ func validate(raw *rawConfig) error {
 	if raw.Runtime.Mode == ModeExecute && raw.Runtime.DryRun {
 		return errors.New("runtime.dry_run cannot be true when runtime.mode is execute")
 	}
+	if raw.Runtime.Continuous && raw.Runtime.Mode != ModeExecute {
+		return errors.New("runtime.continuous requires runtime.mode=execute")
+	}
+	if raw.Runtime.Continuous && !raw.Runtime.RegeneratePlanOnExecute {
+		return errors.New("runtime.continuous requires runtime.regenerate_plan_on_execute=true")
+	}
 	if strings.TrimSpace(raw.Runtime.PlanFile) == "" {
 		return errors.New("runtime.plan_file is required")
 	}
@@ -247,14 +281,28 @@ func validate(raw *rawConfig) error {
 	if raw.Scenario.TradesPerMarketMin > raw.Scenario.TradesPerMarketMax {
 		return errors.New("scenario.trades_per_market_min must be <= trades_per_market_max")
 	}
-	if raw.Scenario.Type == ScenarioTradeExisting && !raw.Runtime.OnChain && raw.Runtime.Mode == ModeExecute {
-		return errors.New("scenario.type=trade_existing requires runtime.on_chain=true when runtime.mode is execute")
-	}
 	if raw.Scenario.Participants < 2 && !raw.Trade.CreatorAlsoTrades {
 		return errors.New("scenario.participants must be at least 2 when trade.creator_also_trades is false")
 	}
 	if raw.Market.DurationMinSeconds > raw.Market.DurationMaxSeconds {
 		return errors.New("market.duration_min_seconds must be <= duration_max_seconds")
+	}
+	if raw.Market.DurationMinSeconds < 86400 || raw.Market.DurationMaxSeconds > 4*86400 {
+		return errors.New("market durations must be between 1 and 4 whole days")
+	}
+	if raw.Market.DurationMinSeconds%86400 != 0 || raw.Market.DurationMaxSeconds%86400 != 0 {
+		return errors.New("market durations must be whole-day seconds")
+	}
+	if raw.Timing.PauseSeconds < 0 || raw.Timing.TradeIntervalMinSeconds < 0 ||
+		raw.Timing.TradeIntervalMaxSeconds < 0 || raw.Timing.CycleIntervalMinSeconds < 0 ||
+		raw.Timing.CycleIntervalMaxSeconds < 0 {
+		return errors.New("timing intervals must not be negative")
+	}
+	if raw.Timing.TradeIntervalMinSeconds > raw.Timing.TradeIntervalMaxSeconds {
+		return errors.New("timing.trade_interval_min_seconds must be <= trade_interval_max_seconds")
+	}
+	if raw.Timing.CycleIntervalMinSeconds > raw.Timing.CycleIntervalMaxSeconds {
+		return errors.New("timing.cycle_interval_min_seconds must be <= cycle_interval_max_seconds")
 	}
 	if err := validateBKCAmountRange("market.initial_liquidity", raw.Market.InitialLiquidityMinBKC, raw.Market.InitialLiquidityMaxBKC); err != nil {
 		return err
@@ -331,6 +379,7 @@ func buildConfig(raw *rawConfig) *Config {
 		Runtime: RuntimeConfig{
 			Enabled:                 raw.Runtime.Enabled,
 			Mode:                    raw.Runtime.Mode,
+			Continuous:              raw.Runtime.Continuous,
 			OnChain:                 raw.Runtime.OnChain,
 			DryRun:                  raw.Runtime.DryRun || raw.Runtime.Mode == ModePreview,
 			PlanFile:                strings.TrimSpace(raw.Runtime.PlanFile),
@@ -374,8 +423,16 @@ func buildConfig(raw *rawConfig) *Config {
 			CreatorAlsoTrades: raw.Trade.CreatorAlsoTrades,
 		},
 		Timing: TimingConfig{
-			Pause:   time.Duration(raw.Timing.PauseSeconds * float64(time.Second)),
-			Timeout: time.Duration(raw.Timing.TimeoutSeconds) * time.Second,
+			Pause:            durationFromSeconds(raw.Timing.PauseSeconds),
+			TradeIntervalMin: durationFromSeconds(raw.Timing.TradeIntervalMinSeconds),
+			TradeIntervalMax: durationFromSeconds(raw.Timing.TradeIntervalMaxSeconds),
+			CycleIntervalMin: durationFromSeconds(raw.Timing.CycleIntervalMinSeconds),
+			CycleIntervalMax: durationFromSeconds(raw.Timing.CycleIntervalMaxSeconds),
+			Timeout:          time.Duration(raw.Timing.TimeoutSeconds) * time.Second,
 		},
 	}
+}
+
+func durationFromSeconds(seconds float64) time.Duration {
+	return time.Duration(seconds * float64(time.Second))
 }

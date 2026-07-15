@@ -1,8 +1,6 @@
 # Prediction Market Simulator
 
-这是一个独立的测试数据模拟器，用来模拟多个用户创建博弈池、给新池注入初始流动性、再由多个随机账户参与购买。
-
-默认不会直接写数据库，也不会直接上链。它会先生成一份可检查的计划文件，你确认后再决定这批数据是只落库，还是发真实链上交易。
+这是一个独立的测试数据模拟器，可让多个随机账户在不同时间购买 YES/NO。它支持两种数据模式：为已有博弈池继续生成交易，或创建新博弈池后生成交易。
 
 ## 最快用法
 
@@ -13,47 +11,30 @@ cd PredictionMarket_Simulator
 go run .
 ```
 
-在 `runtime.mode: "preview"` 下，程序会在终端里问你要生成哪类数据：
+程序会直接询问：
 
-- 输入 `1`：创建新博弈池，并生成这些新池的购买数据。
-- 输入 `2`：购买已有博弈池，随后输入已有的 `game_id`，例如 `1,2,3`。
+- 输入 `1`：为已有博弈池生成购买数据，然后输入 `game_id`，例如 `1,2,3`。
+- 输入 `2`：创建新博弈池并生成购买数据，然后输入每轮创建数量。
 
-这一步只生成预览计划，不写数据库、不上链。确认计划没问题后，再把 `runtime.mode` 改成 `"execute"` 执行同一个 `plan_file`。
+交互选择只影响本次运行，不会改写 `config.yaml`。在 execute 模式下，选择后会自动生成对应的新计划，避免误执行旧计划。
 
-## 两步流程
+## 参数选择
 
-第一步：生成预览计划。
-
-```bash
-go run .
-```
-
-`go run .` 默认会读取 `config.yaml`，并在 `preview` 模式下从终端里询问要生成“创建新博弈池”还是“购买已有博弈池”的数据。
-
-如果你想保留旧的非交互命令，仍然可以使用：
+已有博弈池模式：
 
 ```bash
-go run ./cmd/simulator -config config.yaml
+go run . -scenario existing -game-ids 1,2,3
 ```
 
-旧命令不会弹出交互问题，会直接使用 `config.yaml` 里的 `scenario.type`。使用 `go run .` 时，程序会让你选择：
+创建新博弈池模式：
 
-- `1` / `create_and_trade`：生成创建新博弈池的数据，并围绕这些新池生成购买记录。
-- `2` / `trade_existing`：输入已有 `game_id`，只生成购买已有博弈池的数据。
-
-交互输入只覆盖本次 `preview` 运行的配置，不会改写 `config.yaml`。`execute` 模式始终读取已经生成好的 `plan_file`，不会重新随机生成数据。
-
-默认配置是：
-
-```yaml
-runtime:
-  mode: "preview"
-  plan_file: "out/simulator-plan.json"
+```bash
+go run . -scenario create -market-count 3
 ```
 
-运行后会打印本次随机生成的账户、博弈池、交易，并保存到 `out/simulator-plan.json`。
+参数模式不会再弹出问题，适合后台运行。也可以只传 `-game-ids` 或 `-market-count`，模拟器会自动判断模式。
 
-第二步：你看完计划后，再选择执行方式。
+## 数据写入方式
 
 只写数据库，不上链：
 
@@ -80,7 +61,7 @@ mysql:
   dsn: "..."
 ```
 
-`approve_on_chain: true` 是额外确认开关。没有这个开关，即使 `on_chain: true`，模拟器也不会允许执行链上交易。
+`approve_on_chain: true` 是额外确认开关。没有这个开关，即使 `on_chain: true`，模拟器也不会允许执行链上交易。`runtime.mode: preview` 可用于只生成并检查计划，不写数据库、不发送链上交易。
 
 ## 执行模式
 
@@ -129,22 +110,20 @@ scenario:
   existing_game_ids: [1, 2, 3]
 ```
 
-`trade_existing` 真正执行时需要 `runtime.on_chain: true`，因为已有池的储备、份额和价格应以链上状态为准；dry-run 模式可以只预览计划。
+`trade_existing` 在 `on_chain: false` 时从 MySQL 的 `gold_games`、`gold_chain_states` 恢复池状态并继续模拟；在 `on_chain: true` 时读取链上状态并发送真实购买交易。已开奖、退款或已截止的池不会继续生成购买数据。
 
 ## 支持的博弈池类型
 
-这些类型来自当前前端创建池代码：
+新建市场只使用可由 Chainlink XAU/USD 和 BTC/USD 数据轮次复算的 6 种类型：
 
 - `TYPE_PRICE`
-- `TYPE_VOLATILITY`
-- `TYPE_VOLUME`
-- `TYPE_TECHNICAL`
-- `TYPE_TOUCH`
-- `TYPE_RELATIVE`
+- `TYPE_RETURN_THRESHOLD`
 - `TYPE_PRICE_THRESHOLD`
-- `TYPE_EVENT`
+- `TYPE_PRICE_RANGE`
+- `TYPE_RELATIVE`
+- `TYPE_STREAK`
 
-模拟器会根据类型随机生成标题、条件、选项文案和 metadata。合约本身只保存 `ipfsCID` 和时间，类型信息属于池的 metadata/数据库展示层。
+模拟器会生成 `rule_version: 2` 元数据，起止时间固定为北京时间有效零点。`create_and_trade` 创建未来整日市场并逐步添加交易；`trade_existing` 只对现有 `game_id` 生成交易，不修改原市场规则。
 
 ## 主要配置
 
@@ -167,6 +146,10 @@ scenario:
 `runtime.regenerate_plan_on_execute`
 
 控制 execute 模式是否在每次启动时重新生成随机计划。设置为 `true` 时，`go run .` 会生成新的账户、市场模板顺序、参数、持续时间、流动性和交易，并覆盖 `plan_file` 后立即执行；设置为 `false` 时会重复执行已有计划，适合复现问题。真实上链时开启该选项会在每次运行创建新市场，请谨慎使用。
+
+`runtime.continuous`
+
+设为 `true` 后，模拟器会常驻运行。每轮重新生成模拟账户、博弈池和交易计划，在每笔购买前等待随机时间；一轮完成后再等待随机轮次间隔并开始下一轮。此选项只支持 `mode: execute`，并要求 `regenerate_plan_on_execute: true`。设为 `false` 时仍保持原来的一次执行后退出。
 
 `runtime.approve_on_chain`
 
@@ -214,7 +197,7 @@ scenario:
 
 `market.types`
 
-允许随机创建的池类型。留空会使用全部 8 种类型。
+允许随机创建的池类型。留空会使用全部 6 种可确定性裁决类型。
 
 `market.initial_liquidity_min/max_bkc`
 
@@ -222,7 +205,7 @@ scenario:
 
 `market.duration_min/max_seconds`
 
-每个新池持续时间的随机范围，单位是秒。
+每个新池观察期的随机范围，单位是秒。只接受 1-4 个整天，即 `86400` 到 `345600`。
 
 `trade.buy_min/max_bkc`
 
@@ -234,11 +217,64 @@ scenario:
 
 `timing.pause_seconds`
 
-每笔交易之间暂停多久，避免请求打得太密。
+单次交易完成后的短暂停顿，用于降低数据库、链和网关压力。
+
+`timing.trade_interval_min_seconds` / `timing.trade_interval_max_seconds`
+
+控制同一博弈池中相邻两笔购买之间的随机等待时间。新生成的计划会把每笔等待秒数写入 `delay_seconds`，因此可以从计划文件和运行日志核对购买节奏。
+
+`timing.cycle_interval_min_seconds` / `timing.cycle_interval_max_seconds`
+
+只在常驻模式使用，控制一轮完成后到下一轮开始前的随机等待时间。
 
 `timing.timeout_seconds`
 
-整次模拟运行的超时时间。
+单轮模拟的超时时间。常驻模式不会因为这个值结束整个后台进程；某一轮失败后会记录日志，并在轮次间隔后继续尝试。
+
+## 常驻后台运行
+
+先确认 `config.yaml` 中已设置：
+
+```yaml
+runtime:
+  enabled: true
+  mode: "execute"
+  continuous: true
+  regenerate_plan_on_execute: true
+```
+
+建议先构建，再放到后台运行：
+
+```bash
+mkdir -p out
+go build -o out/predictionmarket-simulator .
+nohup ./out/predictionmarket-simulator -interactive=false > out/simulator.log 2>&1 &
+echo $! > out/simulator.pid
+```
+
+也可以在后台命令中直接指定模式。例如持续交易已有池：
+
+```bash
+nohup ./out/predictionmarket-simulator -scenario existing -game-ids 1,2,3 > out/simulator.log 2>&1 &
+```
+
+持续创建新池：
+
+```bash
+nohup ./out/predictionmarket-simulator -scenario create -market-count 3 > out/simulator.log 2>&1 &
+```
+
+查看实时日志：
+
+```bash
+tail -f out/simulator.log
+```
+
+平滑停止：
+
+```bash
+kill "$(cat out/simulator.pid)"
+```
 
 ## 前端是否会显示
 

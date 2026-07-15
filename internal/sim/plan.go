@@ -49,13 +49,14 @@ type PlanMarket struct {
 }
 
 type PlanTrade struct {
-	Index     int    `json:"index"`
-	UserIndex int    `json:"user_index"`
-	User      string `json:"user"`
-	OptionID  int    `json:"option_id"`
-	Option    string `json:"option"`
-	AmountBKC string `json:"amount_bkc"`
-	AmountWei string `json:"amount_wei"`
+	Index        int     `json:"index"`
+	UserIndex    int     `json:"user_index"`
+	User         string  `json:"user"`
+	OptionID     int     `json:"option_id"`
+	Option       string  `json:"option"`
+	AmountBKC    string  `json:"amount_bkc"`
+	AmountWei    string  `json:"amount_wei"`
+	DelaySeconds float64 `json:"delay_seconds,omitempty"`
 }
 
 func writePlan(path string, plan *Plan) error {

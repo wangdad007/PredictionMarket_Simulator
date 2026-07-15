@@ -5,21 +5,43 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	TypePrice          = "TYPE_PRICE"
-	TypeVolatility     = "TYPE_VOLATILITY"
-	TypeVolume         = "TYPE_VOLUME"
-	TypeTechnical      = "TYPE_TECHNICAL"
-	TypeTouch          = "TYPE_TOUCH"
-	TypeRelative       = "TYPE_RELATIVE"
-	TypePriceThreshold = "TYPE_PRICE_THRESHOLD"
-	TypeEvent          = "TYPE_EVENT"
+	TypePrice           = "TYPE_PRICE"
+	TypeReturnThreshold = "TYPE_RETURN_THRESHOLD"
+	TypePriceThreshold  = "TYPE_PRICE_THRESHOLD"
+	TypePriceRange      = "TYPE_PRICE_RANGE"
+	TypeRelative        = "TYPE_RELATIVE"
+	TypeStreak          = "TYPE_STREAK"
+
+	// Legacy constants remain readable by older plans, but are not offered for creation.
+	TypeVolatility = "TYPE_VOLATILITY"
+	TypeVolume     = "TYPE_VOLUME"
+	TypeTechnical  = "TYPE_TECHNICAL"
+	TypeTouch      = "TYPE_TOUCH"
+	TypeEvent      = "TYPE_EVENT"
+
+	ChainlinkSource        = "CHAINLINK_DATA_FEED_ETHEREUM"
+	ChainlinkXAUUSDFeed    = "0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6"
+	ChainlinkBTCUSDFeed    = "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c"
+	ChainlinkETHUSDFeed    = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+	ChainlinkSOLUSDFeed    = "0x4ffC43a60e009B551865A93d232E33Fce9f01507"
+	ChainlinkBNBUSDFeed    = "0x14e613AC84a31f709eadbdF89C6CC390fDc9540A"
+	BoundaryLastAtOrBefore = "LAST_AT_OR_BEFORE"
+	MaxStalenessSeconds    = int64(43200)
 )
+
+var benchmarkFeeds = map[string]string{
+	"BTC": ChainlinkBTCUSDFeed,
+	"ETH": ChainlinkETHUSDFeed,
+	"SOL": ChainlinkSOLUSDFeed,
+	"BNB": ChainlinkBNBUSDFeed,
+}
 
 type Template struct {
 	Type         string
@@ -27,8 +49,6 @@ type Template struct {
 	OptionYes    string
 	OptionNo     string
 	Params       []string
-	BuildDesc    func(param string, start time.Time, end time.Time, seed int) string
-	BuildCond    func(param string, start time.Time, end time.Time, seed int) string
 	DetailedInfo string
 }
 
@@ -59,134 +79,35 @@ type BuildMarketInput struct {
 
 var templates = map[string]Template{
 	TypePrice: {
-		Type:      TypePrice,
-		Title:     "黄金价格方向预测",
-		OptionYes: "YES",
-		OptionNo:  "NO",
-		Params:    []string{"上涨", "下跌", "持平"},
-		BuildDesc: func(param string, start time.Time, end time.Time, _ int) string {
-			return fmt.Sprintf("黄金价格 %s %s", param, durationDays(start, end))
-		},
-		BuildCond: func(param string, start time.Time, end time.Time, _ int) string {
-			return fmt.Sprintf("黄金价格在 从 %s 到 %s 相对基准 %s", formatTime(start), formatTime(end), priceDirectionLabel(param))
-		},
-		DetailedInfo: "模拟用户创建的方向类黄金预测池。",
+		Type: TypePrice, Title: "黄金价格方向", OptionYes: "YES", OptionNo: "NO",
+		Params: []string{"UP", "DOWN", "FLAT"}, DetailedInfo: "按北京时间整日边界比较 Chainlink XAU/USD 起止价格。",
 	},
-	TypeVolatility: {
-		Type:      TypeVolatility,
-		Title:     "黄金波动率预测",
-		OptionYes: "YES",
-		OptionNo:  "NO",
-		Params:    []string{"1.5", "3", "5"},
-		BuildDesc: func(param string, _ time.Time, end time.Time, _ int) string {
-			return fmt.Sprintf("黄金波动 大于 %s%%", param)
-		},
-		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
-			return fmt.Sprintf("周期内波幅 >= %s%% (截至 %s)", param, formatTime(end))
-		},
-		DetailedInfo: "模拟用户创建的波动率类黄金预测池。",
-	},
-	TypeVolume: {
-		Type:      TypeVolume,
-		Title:     "黄金交易量预测",
-		OptionYes: "YES",
-		OptionNo:  "NO",
-		Params:    []string{"300", "500", "800"},
-		BuildDesc: func(param string, _ time.Time, end time.Time, seed int) string {
-			return fmt.Sprintf("黄金成交量 %s %s吨", operatorForSeed(seed), param)
-		},
-		BuildCond: func(param string, _ time.Time, end time.Time, seed int) string {
-			return fmt.Sprintf("指定日成交量 %s %s 吨 (%s)", operatorForSeed(seed), param, formatTime(end))
-		},
-		DetailedInfo: "模拟用户创建的交易量类黄金预测池。",
-	},
-	TypeTechnical: {
-		Type:      TypeTechnical,
-		Title:     "黄金技术指标预测",
-		OptionYes: "YES",
-		OptionNo:  "NO",
-		Params: []string{
-			"RSI (14) 触发 大于 (Above) 70",
-			"MACD (12,26,9) 触发 交叉向上 (Cross Up) 0",
-			"KDJ (9,3,3) 触发 交叉向下 (Cross Down) 0",
-			"BOLL (20,2) 触发 小于 (Below) 0",
-		},
-		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
-			return technicalDescription(param)
-		},
-		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
-			return fmt.Sprintf("指标 %s (截至 %s)", strings.Replace(param, "触发 ", "", 1), formatTime(end))
-		},
-		DetailedInfo: "模拟用户创建的技术指标类黄金预测池。",
-	},
-	TypeTouch: {
-		Type:      TypeTouch,
-		Title:     "黄金触价预测",
-		OptionYes: "YES",
-		OptionNo:  "NO",
-		Params:    []string{"2500", "2800", "3000"},
-		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
-			return fmt.Sprintf("黄金价格 触及 %sUSD/盎司", param)
-		},
-		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
-			return fmt.Sprintf("金价曾触及 %s USD/盎司 (截至 %s)", param, formatTime(end))
-		},
-		DetailedInfo: "模拟用户创建的触价类黄金预测池。",
-	},
-	TypeRelative: {
-		Type:      TypeRelative,
-		Title:     "黄金相对表现预测",
-		OptionYes: "YES",
-		OptionNo:  "NO",
-		Params:    []string{"比特币", "标普500", "白银"},
-		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
-			return fmt.Sprintf("黄金 跑赢 %s", benchmarkShortName(param))
-		},
-		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
-			return fmt.Sprintf("黄金收益率跑赢 %s (截至 %s)", param, formatTime(end))
-		},
-		DetailedInfo: "模拟用户创建的相对表现类黄金预测池。",
+	TypeReturnThreshold: {
+		Type: TypeReturnThreshold, Title: "黄金涨跌幅", OptionYes: "YES", OptionNo: "NO",
+		Params: []string{"1", "2", "3"}, DetailedInfo: "按 Chainlink XAU/USD 起止价计算绝对涨跌幅。",
 	},
 	TypePriceThreshold: {
-		Type:      TypePriceThreshold,
-		Title:     "黄金价格阈值预测",
-		OptionYes: "YES",
-		OptionNo:  "NO",
-		Params:    []string{"2800", "3000", "3200"},
-		BuildDesc: func(param string, _ time.Time, end time.Time, seed int) string {
-			return fmt.Sprintf("黄金价格 %s %sUSD/盎司", operatorForSeed(seed), param)
-		},
-		BuildCond: func(param string, _ time.Time, end time.Time, seed int) string {
-			return fmt.Sprintf("黄金价格 %s %s USD/盎司 (截至 %s)", operatorForSeed(seed), param, formatTime(end))
-		},
-		DetailedInfo: "模拟用户创建的到期价格阈值类黄金预测池。",
+		Type: TypePriceThreshold, Title: "黄金价格阈值", OptionYes: "YES", OptionNo: "NO",
+		Params: []string{"3900", "4100", "4300"}, DetailedInfo: "使用截止边界前最后一轮 Chainlink XAU/USD 价格。",
 	},
-	TypeEvent: {
-		Type:      TypeEvent,
-		Title:     "宏观事件预测",
-		OptionYes: "YES",
-		OptionNo:  "NO",
-		Params:    []string{"美联储降息", "CPI 低于预期", "美元指数大幅回落"},
-		BuildDesc: func(param string, _ time.Time, _ time.Time, _ int) string {
-			return fmt.Sprintf("发生 %s", param)
-		},
-		BuildCond: func(param string, _ time.Time, end time.Time, _ int) string {
-			return fmt.Sprintf("事件「%s」是否发生 (截至 %s)", param, formatTime(end))
-		},
-		DetailedInfo: "模拟用户创建的宏观事件类黄金预测池。",
+	TypePriceRange: {
+		Type: TypePriceRange, Title: "黄金价格区间", OptionYes: "YES", OptionNo: "NO",
+		Params: []string{"3800,4000", "4000,4200", "4200,4400"}, DetailedInfo: "判断截止价是否位于预先约定的闭区间。",
+	},
+	TypeRelative: {
+		Type: TypeRelative, Title: "黄金相对加密资产表现", OptionYes: "YES", OptionNo: "NO",
+		Params: []string{"BTC", "ETH", "SOL", "BNB"}, DetailedInfo: "使用同一北京时间窗的 Chainlink XAU/USD 与所选加密资产/USD 计算收益率。",
+	},
+	TypeStreak: {
+		Type: TypeStreak, Title: "黄金连续涨跌", OptionYes: "YES", OptionNo: "NO",
+		Params: []string{"UP", "DOWN"}, DetailedInfo: "比较每个连续北京交易日边界的 Chainlink XAU/USD 价格。",
 	},
 }
 
 func SupportedTypes() []string {
 	return []string{
-		TypePrice,
-		TypeVolatility,
-		TypeVolume,
-		TypeTechnical,
-		TypeTouch,
-		TypeRelative,
-		TypePriceThreshold,
-		TypeEvent,
+		TypePrice, TypeReturnThreshold, TypePriceThreshold,
+		TypePriceRange, TypeRelative, TypeStreak,
 	}
 }
 
@@ -201,32 +122,31 @@ func BuildMarket(input BuildMarketInput) (*Market, error) {
 		return nil, fmt.Errorf("unsupported market type %q", input.Type)
 	}
 	if input.Now.IsZero() {
-		input.Now = time.Now().UTC()
+		input.Now = time.Now()
 	}
-	if input.Duration <= 0 {
-		return nil, fmt.Errorf("duration must be positive")
+	var start, end time.Time
+	var err error
+	if input.Type == TypeStreak {
+		start, end, err = NormalizeStreakWindow(input.Now, input.Duration)
+	} else {
+		start, end, err = NormalizeMarketWindow(input.Now, input.Duration)
 	}
-	param := tpl.Params[input.TemplateSeed%len(tpl.Params)]
-	end := input.Now.Add(input.Duration)
-	desc := tpl.BuildDesc(param, input.Now, end, input.TemplateSeed)
-	condition := tpl.BuildCond(param, input.Now, end, input.TemplateSeed)
+	if err != nil {
+		return nil, err
+	}
+	seed := nonNegativeSeed(input.TemplateSeed)
+	param := tpl.Params[seed%len(tpl.Params)]
+	desc, condition, rule := buildTemplateContent(tpl.Type, param, start, end, seed)
 	avatarURL := "template://" + tpl.Type
-	metadata := map[string]any{
-		"type":           tpl.Type,
-		"desc":           desc,
-		"condition":      condition,
-		"avatarUrl":      avatarURL,
-		"detailedInfo":   tpl.DetailedInfo,
-		"optionYES":      tpl.OptionYes,
-		"optionNO":       tpl.OptionNo,
-		"creator":        input.Creator,
-		"initialBKC":     input.InitialBKC,
-		"durationSec":    int64(input.Duration / time.Second),
-		"templateParam":  param,
-		"resolutionRule": buildResolutionRule(tpl.Type, param, input.Now, end, input.TemplateSeed),
+	durationSeconds := int64(end.Sub(input.Now).Seconds())
+	if durationSeconds <= 0 {
+		return nil, fmt.Errorf("normalized market deadline must be in the future")
 	}
-	if sources := authoritativeSources(tpl.Type, param); len(sources) > 0 {
-		metadata["authoritativeSources"] = sources
+	metadata := map[string]any{
+		"type": tpl.Type, "desc": desc, "condition": condition, "avatarUrl": avatarURL,
+		"detailedInfo": tpl.DetailedInfo, "optionYES": tpl.OptionYes, "optionNO": tpl.OptionNo,
+		"creator": input.Creator, "initialBKC": input.InitialBKC, "durationSec": durationSeconds,
+		"templateParam": param, "resolutionRule": rule,
 	}
 	raw, err := json.Marshal(metadata)
 	if err != nil {
@@ -234,66 +154,70 @@ func BuildMarket(input BuildMarketInput) (*Market, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return &Market{
-		Type:             tpl.Type,
-		IPFSCID:          "sim-" + hex.EncodeToString(sum[:])[:32],
-		Desc:             desc,
-		Condition:        condition,
-		AvatarURL:        avatarURL,
-		DetailedInfo:     tpl.DetailedInfo,
-		OptionYes:        tpl.OptionYes,
-		OptionNo:         tpl.OptionNo,
-		CreatorAddress:   input.Creator,
-		DurationSeconds:  int64(input.Duration / time.Second),
-		InitialLiquidity: input.InitialBKC,
-		MetadataJSON:     string(raw),
+		Type: tpl.Type, IPFSCID: "sim-" + hex.EncodeToString(sum[:])[:32],
+		Desc: desc, Condition: condition, AvatarURL: avatarURL, DetailedInfo: tpl.DetailedInfo,
+		OptionYes: tpl.OptionYes, OptionNo: tpl.OptionNo, CreatorAddress: input.Creator,
+		DurationSeconds: durationSeconds, InitialLiquidity: input.InitialBKC, MetadataJSON: string(raw),
 	}, nil
 }
 
-func authoritativeSources(typ, param string) []string {
-	if typ == TypeEvent {
-		if strings.Contains(param, "美联储") {
-			return []string{"https://www.federalreserve.gov/newsevents/pressreleases.htm"}
-		}
-		if strings.Contains(strings.ToUpper(param), "CPI") {
-			return []string{"https://www.bls.gov/cpi/"}
-		}
-	}
-	return nil
-}
-
-func buildResolutionRule(typ, param string, start, end time.Time, seed int) map[string]any {
-	rule := map[string]any{
-		"type": typ, "symbol": "XAU", "source": "GOLD_API",
-		"start_time_sec": start.Unix(), "end_time_sec": end.Unix(),
-	}
+func buildTemplateContent(typ, param string, start, end time.Time, seed int) (string, string, map[string]any) {
+	days := int(end.Sub(start) / (24 * time.Hour))
+	rule := baseResolutionRule(typ, start, end)
+	period := fmt.Sprintf("北京时间 %s 00:00 至 %s 00:00", start.Format("2006-01-02"), end.Format("2006-01-02"))
 	switch typ {
 	case TypePrice:
-		rule["direction"] = map[string]string{"上涨": "UP", "下跌": "DOWN", "持平": "FLAT"}[param]
-		rule["flat_tolerance_percent"] = 0.1
-	case TypeVolatility:
-		rule["operator"], rule["threshold"] = "GTE", numericParam(param)
-	case TypeVolume:
-		rule["symbol"], rule["source"] = "COMEX_GC", "CME_GROUP"
-		rule["operator"], rule["threshold"] = canonicalOperator(seed), numericParam(param)
-		rule["volume_unit"] = "METRIC_TON_EQUIVALENT"
-	case TypeTechnical:
-		rule["indicator"] = strings.Fields(param)[0]
-		rule["operator"] = technicalOperator(param)
-		rule["interval"] = "hour"
-	case TypeTouch:
-		rule["threshold"] = numericParam(param)
-	case TypeRelative:
-		rule["benchmark"] = benchmarkShortName(param)
+		directionNames := map[string]string{"UP": "上涨", "DOWN": "下跌", "FLAT": "持平"}
+		rule["direction"], rule["flat_tolerance_percent"] = param, 0.05
+		return fmt.Sprintf("黄金价格 %s %d天", directionNames[param], days),
+			fmt.Sprintf("%s，XAU/USD 收益率相对 ±0.05%% 容差判定%s", period, directionNames[param]), rule
+	case TypeReturnThreshold:
+		operator, operatorName := orderedOperator(seed)
+		rule["operator"], rule["threshold"] = operator, numericParam(param)
+		return fmt.Sprintf("黄金涨跌幅 %s %s%%", operatorName, param),
+			fmt.Sprintf("%s，XAU/USD 绝对收益率%s%s%%", period, operatorName, param), rule
 	case TypePriceThreshold:
-		rule["operator"], rule["threshold"] = canonicalOperator(seed), numericParam(param)
-	case TypeEvent:
-		rule["source"] = "AUTHORITATIVE_DOCUMENTS"
-		rule["event"] = param
-		if sources := authoritativeSources(typ, param); len(sources) > 0 {
-			rule["authoritative_sources"] = sources
+		operator, operatorName := orderedOperator(seed)
+		rule["operator"], rule["threshold"] = operator, numericParam(param)
+		return fmt.Sprintf("黄金价格 %s %sUSD/盎司", operatorName, param),
+			fmt.Sprintf("%s 截止边界的 XAU/USD 价格%s%sUSD/盎司", period, operatorName, param), rule
+	case TypePriceRange:
+		lower, upper := parseRange(param)
+		operator, operatorName := "IN_RANGE", "位于"
+		if seed%2 == 1 {
+			operator, operatorName = "OUTSIDE_RANGE", "不在"
 		}
+		rule["operator"], rule["lower_threshold"], rule["upper_threshold"] = operator, lower, upper
+		return fmt.Sprintf("黄金价格 %s %g-%gUSD/盎司", operatorName, lower, upper),
+			fmt.Sprintf("%s 截止边界的 XAU/USD 价格%s闭区间 [%g, %g]USD/盎司", period, operatorName, lower, upper), rule
+	case TypeRelative:
+		rule["benchmark"], rule["benchmark_source_contract"] = param, benchmarkFeeds[param]
+		return "黄金 跑赢 " + param,
+			fmt.Sprintf("%s，XAU/USD 收益率严格高于 %s/USD 收益率", period, param), rule
+	case TypeStreak:
+		directionName := map[string]string{"UP": "上涨", "DOWN": "下跌"}[param]
+		rule["direction"], rule["streak_days"] = param, days
+		return fmt.Sprintf("黄金价格 连续%s %d天", directionName, days),
+			fmt.Sprintf("%s，每个相邻北京日边界的 XAU/USD 价格均%s", period, directionName), rule
+	default:
+		return "", "", rule
 	}
-	return rule
+}
+
+func baseResolutionRule(typ string, start, end time.Time) map[string]any {
+	return map[string]any{
+		"rule_version": 2, "type": typ, "symbol": "XAU", "source": ChainlinkSource,
+		"source_contract": ChainlinkXAUUSDFeed, "timezone": BeijingTimezone,
+		"boundary_policy": BoundaryLastAtOrBefore, "max_staleness_sec": MaxStalenessSeconds,
+		"start_time_sec": start.Unix(), "end_time_sec": end.Unix(),
+	}
+}
+
+func orderedOperator(seed int) (string, string) {
+	if seed%2 == 1 {
+		return "LTE", "小于等于"
+	}
+	return "GTE", "大于等于"
 }
 
 func numericParam(value string) float64 {
@@ -301,87 +225,20 @@ func numericParam(value string) float64 {
 	return parsed
 }
 
-func canonicalOperator(seed int) string {
-	switch seed % 3 {
-	case 1:
-		return "LT"
-	case 2:
-		return "EQ"
-	default:
-		return "GT"
+func parseRange(value string) (float64, float64) {
+	parts := strings.Split(value, ",")
+	if len(parts) != 2 {
+		return 0, 0
 	}
+	return numericParam(parts[0]), numericParam(parts[1])
 }
 
-func technicalOperator(value string) string {
-	switch {
-	case strings.Contains(value, "交叉向上"):
-		return "CROSS_UP"
-	case strings.Contains(value, "交叉向下"):
-		return "CROSS_DOWN"
-	case strings.Contains(value, "小于"):
-		return "LT"
-	default:
-		return "GT"
+func nonNegativeSeed(seed int) int {
+	if seed == math.MinInt {
+		return math.MaxInt
 	}
-}
-
-func operatorForSeed(seed int) string {
-	switch seed % 3 {
-	case 1:
-		return "小于"
-	case 2:
-		return "等于"
-	default:
-		return "大于"
+	if seed < 0 {
+		return -seed
 	}
-}
-
-func formatTime(value time.Time) string {
-	return value.Format("2006-01-02 15:04")
-}
-
-func durationDays(start time.Time, end time.Time) string {
-	hours := int64(end.Sub(start).Hours())
-	if hours <= 0 {
-		return ""
-	}
-	days := (hours + 23) / 24
-	return fmt.Sprintf("%d天", days)
-}
-
-func benchmarkShortName(value string) string {
-	switch value {
-	case "比特币", "Bitcoin":
-		return "BTC"
-	default:
-		return value
-	}
-}
-
-func technicalDescription(value string) string {
-	switch {
-	case strings.HasPrefix(value, "RSI"):
-		return "黄金RSI 大于 70"
-	case strings.HasPrefix(value, "MACD"):
-		return "黄金MACD 交叉向上"
-	case strings.HasPrefix(value, "KDJ"):
-		return "黄金KDJ 交叉向下"
-	case strings.HasPrefix(value, "BOLL"):
-		return "黄金BOLL 小于 0"
-	default:
-		return "黄金指标"
-	}
-}
-
-func priceDirectionLabel(direction string) string {
-	switch direction {
-	case "上涨":
-		return "上涨 (Price Up)"
-	case "下跌":
-		return "下跌 (Price Down)"
-	case "持平":
-		return "持平 (Flat/Range)"
-	default:
-		return direction
-	}
+	return seed
 }

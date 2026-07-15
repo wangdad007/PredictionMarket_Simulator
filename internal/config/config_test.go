@@ -11,6 +11,7 @@ func TestLoadReadsSimulatorConfig(t *testing.T) {
 	path := writeConfig(t, `runtime:
   enabled: true
   mode: "preview"
+  continuous: false
   on_chain: false
   dry_run: true
   plan_file: "out/custom-plan.json"
@@ -34,17 +35,21 @@ scenario:
   trades_per_market_min: 3
   trades_per_market_max: 6
 market:
-  types: ["TYPE_PRICE", "TYPE_EVENT"]
+  types: ["TYPE_PRICE", "TYPE_PRICE_RANGE"]
   initial_liquidity_min_bkc: "3"
   initial_liquidity_max_bkc: "9"
-  duration_min_seconds: 3600
-  duration_max_seconds: 7200
+  duration_min_seconds: 86400
+  duration_max_seconds: 172800
 trade:
   buy_min_bkc: "0.2"
   buy_max_bkc: "2"
   creator_also_trades: true
 timing:
   pause_seconds: 0.5
+  trade_interval_min_seconds: 2
+  trade_interval_max_seconds: 8
+  cycle_interval_min_seconds: 30
+  cycle_interval_max_seconds: 90
   timeout_seconds: 90
 `)
 
@@ -62,10 +67,12 @@ timing:
 	if cfg.Scenario.Type != ScenarioCreateAndTrade || cfg.Scenario.MarketCount != 2 || cfg.Scenario.Participants != 5 {
 		t.Fatalf("unexpected scenario config: %+v", cfg.Scenario)
 	}
-	if cfg.Timing.Pause != 500*time.Millisecond || cfg.Timing.Timeout != 90*time.Second {
+	if cfg.Timing.Pause != 500*time.Millisecond || cfg.Timing.TradeIntervalMin != 2*time.Second ||
+		cfg.Timing.TradeIntervalMax != 8*time.Second || cfg.Timing.CycleIntervalMin != 30*time.Second ||
+		cfg.Timing.CycleIntervalMax != 90*time.Second || cfg.Timing.Timeout != 90*time.Second {
 		t.Fatalf("unexpected timing config: %+v", cfg.Timing)
 	}
-	if len(cfg.Market.Types) != 2 || cfg.Market.Types[1] != "TYPE_EVENT" {
+	if len(cfg.Market.Types) != 2 || cfg.Market.Types[1] != "TYPE_PRICE_RANGE" {
 		t.Fatalf("unexpected market types: %#v", cfg.Market.Types)
 	}
 	if cfg.IPFS.UploadURL != "http://127.0.0.1:8081/api/v1/ipfs/add" {
@@ -96,14 +103,34 @@ mysql:
 	if cfg.Market.InitialLiquidityMinBKC != "3" || cfg.Market.InitialLiquidityMaxBKC != "12" {
 		t.Fatalf("unexpected default market amounts: %+v", cfg.Market)
 	}
-	if len(cfg.Market.Types) != 8 {
-		t.Fatalf("default market types = %d, want 8", len(cfg.Market.Types))
+	if len(cfg.Market.Types) != 6 {
+		t.Fatalf("default market types = %d, want 6", len(cfg.Market.Types))
+	}
+	if cfg.Market.DurationMin != 24*time.Hour || cfg.Market.DurationMax != 4*24*time.Hour {
+		t.Fatalf("unexpected default market duration: %+v", cfg.Market)
 	}
 	if cfg.Runtime.Mode != ModeExecute {
 		t.Fatalf("default runtime mode = %q, want %q", cfg.Runtime.Mode, ModeExecute)
 	}
 	if cfg.Runtime.PlanFile == "" {
 		t.Fatal("default runtime plan file is empty")
+	}
+}
+
+func TestLoadRejectsSubDayMarketDuration(t *testing.T) {
+	path := writeConfig(t, `runtime:
+  enabled: true
+  mode: "preview"
+chain:
+  contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+mysql:
+  dsn: ""
+market:
+  duration_min_seconds: 3600
+  duration_max_seconds: 86400
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected sub-day duration to be rejected")
 	}
 }
 
@@ -164,7 +191,7 @@ market:
 	}
 }
 
-func TestLoadRejectsOffchainExistingTradesOutsideDryRun(t *testing.T) {
+func TestLoadAllowsOffchainExistingTrades(t *testing.T) {
 	path := writeConfig(t, `runtime:
   enabled: true
   on_chain: false
@@ -177,8 +204,12 @@ scenario:
   type: "trade_existing"
   existing_game_ids: [1]
 `)
-	if _, err := Load(path); err == nil {
-		t.Fatal("Load succeeded, want offchain trade_existing error")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Scenario.Type != ScenarioTradeExisting || cfg.Runtime.OnChain {
+		t.Fatalf("unexpected config: runtime=%+v scenario=%+v", cfg.Runtime, cfg.Scenario)
 	}
 }
 
@@ -195,6 +226,73 @@ trade:
 `)
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load succeeded, want reversed amount range error")
+	}
+}
+
+func TestLoadReadsContinuousRuntimeMode(t *testing.T) {
+	path := writeConfig(t, `runtime:
+  enabled: true
+  mode: "execute"
+  continuous: true
+  regenerate_plan_on_execute: true
+chain:
+  contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+mysql:
+  dsn: "root:secret@tcp(127.0.0.1:3306)/predictionmarket_local?parseTime=true"
+timing:
+  trade_interval_min_seconds: 5
+  trade_interval_max_seconds: 15
+  cycle_interval_min_seconds: 60
+  cycle_interval_max_seconds: 120
+  timeout_seconds: 600
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Runtime.Continuous {
+		t.Fatal("runtime.continuous = false, want true")
+	}
+	if cfg.Timing.TradeIntervalMin != 5*time.Second || cfg.Timing.TradeIntervalMax != 15*time.Second {
+		t.Fatalf("unexpected trade interval: %+v", cfg.Timing)
+	}
+	if cfg.Timing.CycleIntervalMin != time.Minute || cfg.Timing.CycleIntervalMax != 2*time.Minute {
+		t.Fatalf("unexpected cycle interval: %+v", cfg.Timing)
+	}
+}
+
+func TestLoadRejectsContinuousPreviewMode(t *testing.T) {
+	path := writeConfig(t, `runtime:
+  enabled: true
+  mode: "preview"
+  continuous: true
+chain:
+  contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+`)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load succeeded, want continuous preview validation error")
+	}
+}
+
+func TestLoadRejectsReversedContinuousIntervals(t *testing.T) {
+	path := writeConfig(t, `runtime:
+  enabled: true
+  mode: "execute"
+  continuous: true
+  regenerate_plan_on_execute: true
+chain:
+  contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+mysql:
+  dsn: "root:secret@tcp(127.0.0.1:3306)/predictionmarket_local?parseTime=true"
+timing:
+  trade_interval_min_seconds: 20
+  trade_interval_max_seconds: 10
+`)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load succeeded, want reversed trade interval error")
 	}
 }
 

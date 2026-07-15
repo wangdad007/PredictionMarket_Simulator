@@ -31,6 +31,14 @@ const (
 var (
 	defaultBrokerLimiter = newBrokerRequestLimiter(1, time.Second)
 	brokerRetryBackoff   = []time.Duration{2 * time.Second, 10 * time.Second}
+	// Supervisor's local JSON-RPC endpoint limits each client IP to 30 requests per
+	// second. A single funding transfer uses several RPC calls (chain ID, nonce,
+	// gas price, send transaction and receipt polling), so an unthrottled batch of
+	// participants can otherwise be rejected midway through the batch.
+	//
+	// Keep this deliberately below the server limit to leave capacity for the
+	// backend and the Android client that use the same local node.
+	defaultLocalRPCLimiter = newBrokerRequestLimiter(1, 100*time.Millisecond)
 )
 
 type Client struct {
@@ -239,6 +247,13 @@ func (c *Client) rpcBigInt(ctx context.Context, method string, params []any) (*b
 }
 
 func (c *Client) rpcCall(ctx context.Context, method string, params []any, out any) error {
+	if !c.useBrokerChain {
+		release, err := defaultLocalRPCLimiter.acquire(ctx)
+		if err != nil {
+			return fmt.Errorf("wait for local rpc request slot: %w", err)
+		}
+		defer release()
+	}
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
@@ -262,6 +277,13 @@ func (c *Client) rpcCall(ctx context.Context, method string, params []any, out a
 	if err != nil {
 		return err
 	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body := strings.TrimSpace(string(raw))
+		if len(body) > 512 {
+			body = body[:512] + "..."
+		}
+		return fmt.Errorf("local rpc HTTP %d: %s", resp.StatusCode, body)
+	}
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
@@ -277,7 +299,13 @@ func (c *Client) rpcCall(ctx context.Context, method string, params []any, out a
 	if out == nil {
 		return nil
 	}
-	return json.Unmarshal(envelope.Result, out)
+	if len(envelope.Result) == 0 {
+		return fmt.Errorf("local rpc %s returned neither result nor error", method)
+	}
+	if err := json.Unmarshal(envelope.Result, out); err != nil {
+		return fmt.Errorf("decode local rpc %s result: %w", method, err)
+	}
+	return nil
 }
 
 func (c *Client) waitForReceipt(ctx context.Context, txHash string) error {

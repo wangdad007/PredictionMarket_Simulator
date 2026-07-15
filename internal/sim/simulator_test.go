@@ -34,7 +34,7 @@ func TestPrepareExecutionPlanRegeneratesInsteadOfReadingExistingPlan(t *testing.
 		},
 		Market: config.MarketConfig{
 			Types: []string{"TYPE_PRICE"}, InitialLiquidityMinBKC: "1", InitialLiquidityMaxBKC: "1",
-			DurationMin: time.Hour, DurationMax: time.Hour,
+			DurationMin: 24 * time.Hour, DurationMax: 24 * time.Hour,
 		},
 		Trade: config.TradeConfig{BuyMinBKC: "0.1", BuyMaxBKC: "0.1"},
 	}
@@ -154,11 +154,11 @@ func TestRunPreviewWritesReviewablePlanFile(t *testing.T) {
 			TradesPerMarketMax: 1,
 		},
 		Market: config.MarketConfig{
-			Types:                  []string{"TYPE_PRICE", "TYPE_EVENT"},
+			Types:                  []string{"TYPE_PRICE", "TYPE_PRICE_RANGE"},
 			InitialLiquidityMinBKC: "3",
 			InitialLiquidityMaxBKC: "3",
-			DurationMin:            time.Hour,
-			DurationMax:            time.Hour,
+			DurationMin:            24 * time.Hour,
+			DurationMax:            24 * time.Hour,
 		},
 		Trade: config.TradeConfig{
 			BuyMinBKC: "0.2",
@@ -186,7 +186,7 @@ func TestRunPreviewWritesReviewablePlanFile(t *testing.T) {
 	for _, market := range plan.Markets {
 		marketTypes[market.Type] = true
 	}
-	if !marketTypes["TYPE_PRICE"] || !marketTypes["TYPE_EVENT"] {
+	if !marketTypes["TYPE_PRICE"] || !marketTypes["TYPE_PRICE_RANGE"] {
 		t.Fatalf("preview did not include configured market types: %+v", marketTypes)
 	}
 	if len(plan.Markets[0].Trades) != 1 {
@@ -217,5 +217,103 @@ func TestExecutePlannedTradesRejectsUserAddressMismatch(t *testing.T) {
 	err := New(cfg, nil).executePlannedTradesForMarket(context.Background(), nil, participants, 1, nil, trades)
 	if err == nil {
 		t.Fatal("executePlannedTradesForMarket succeeded, want user mismatch error")
+	}
+}
+
+func TestBuildPlannedTradesSchedulesDifferentUsersAtDifferentTimes(t *testing.T) {
+	cfg := &config.Config{
+		Scenario: config.ScenarioConfig{
+			Participants: 4, TradesPerMarketMin: 12, TradesPerMarketMax: 12,
+		},
+		Trade: config.TradeConfig{
+			BuyMinBKC: "0.1", BuyMaxBKC: "0.1", CreatorAlsoTrades: false,
+		},
+		Timing: config.TimingConfig{
+			TradeIntervalMin: 2 * time.Second,
+			TradeIntervalMax: 5 * time.Second,
+		},
+	}
+	participants, err := buildParticipants(cfg.Scenario.Participants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	simulator := New(cfg, nil)
+	simulator.rng = rand.New(rand.NewSource(7))
+
+	trades, err := simulator.buildPlannedTrades(participants, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, trade := range trades {
+		if trade.DelaySeconds < 2 || trade.DelaySeconds > 5 {
+			t.Fatalf("trade #%d delay = %v, want [2, 5] seconds", trade.Index, trade.DelaySeconds)
+		}
+		if trade.UserIndex == 0 {
+			t.Fatalf("trade #%d selected creator", trade.Index)
+		}
+		if i > 0 && trade.UserIndex == trades[i-1].UserIndex {
+			t.Fatalf("trades #%d and #%d use the same participant %d", i, i+1, trade.UserIndex)
+		}
+	}
+}
+
+func TestRunContinuousStopsCleanlyWhenContextIsCanceled(t *testing.T) {
+	cfg := &config.Config{
+		Runtime: config.RuntimeConfig{
+			Enabled: true, Mode: config.ModeExecute, Continuous: true,
+			RegeneratePlanOnExecute: true,
+		},
+		Timing: config.TimingConfig{Timeout: time.Second},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := New(cfg, nil).Run(ctx); err != nil {
+		t.Fatalf("Run returned %v after cancellation, want clean shutdown", err)
+	}
+}
+
+func TestExecutePlannedTradesWaitsForScheduledDelay(t *testing.T) {
+	cfg := &config.Config{Runtime: config.RuntimeConfig{Mode: config.ModeExecute}}
+	participants := []participant{{
+		privateKey: "abc",
+		address:    "0x1234567890123456789012345678901234567890",
+	}}
+	trades := []PlanTrade{{
+		Index: 1, UserIndex: 0, User: participants[0].address,
+		OptionID: 0, AmountWei: "1", DelaySeconds: 1,
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	err := New(cfg, nil).executePlannedTradesForMarket(ctx, nil, participants, 1, nil, trades)
+	if err != context.DeadlineExceeded {
+		t.Fatalf("executePlannedTradesForMarket returned %v, want deadline while waiting", err)
+	}
+}
+
+func TestOffchainStateFromStoredMarketPreservesExistingReserves(t *testing.T) {
+	stored := &dbwriter.ExistingMarketState{
+		GameID:         12,
+		IPFSCID:        "existing-cid",
+		TotalPool:      big.NewInt(900),
+		ReserveYes:     big.NewInt(300),
+		ReserveNo:      big.NewInt(600),
+		DeadlineSec:    time.Now().Add(time.Hour).Unix(),
+		ExistingTrades: 17,
+	}
+
+	state, err := offchainStateFromStoredMarket(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.info.ID != 12 || state.info.TotalPool.String() != "900" {
+		t.Fatalf("unexpected game info: %+v", state.info)
+	}
+	if state.reserveYes.String() != "300" || state.reserveNo.String() != "600" {
+		t.Fatalf("unexpected reserves: YES=%s NO=%s", state.reserveYes, state.reserveNo)
+	}
+	if state.nextTradeSeq != 17 {
+		t.Fatalf("next trade sequence = %d, want 17", state.nextTradeSeq)
 	}
 }
